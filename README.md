@@ -1,3 +1,3 @@
 # MCAR_ppl
 
-This project is intended to explore efficient methods of fitting multivariate conditional autoregressive priors in Probabilistic Programming Languages such as Stan and PyMC. 
+This project will explore efficient methods of fitting multivariate conditional autoregressive (MCAR) priors in Probabilistic Programming Languages (PPL) such as Stan and PyMC. 
