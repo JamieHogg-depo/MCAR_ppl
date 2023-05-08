@@ -1,0 +1,199 @@
+---
+title: "Efficient Multivariate Conditional Autoregressive prior in Stan"
+output: 
+  html_document:
+    includes:
+      in_header: "preamble.tex"
+bibliography: bib.bib
+csl: research-in-number-theory.csl
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Load packages ## ------------------------------------------------------------
+
+library(tidyverse)
+library(sf)
+library(spdep)
+library(mvtnorm)
+library(rstan)
+rm(list = ls())
+
+## Functions ## ----------------------------------------------------------------
+
+#' @title getGRID
+#' @description creates a sf object that is a grid of specified size
+#' @param M target number of areas
+#' @returns A list of two objects: sf is a data.frame/sf object with the geometry for the grid, W is the binary weight matrix based on queen contiguity
+
+getGRID <- function(M){
+  
+  out <- list()
+  
+  # provides the height and length dimensions for the grid that are as close to the specified M as possible
+  dims <- c(floor(sqrt(M)), floor(M/floor(sqrt(M))))
+  
+  df <- data.frame(lon = c(0, dims[1]), 
+                   lat = c(0, dims[2])) %>% 
+    st_as_sf(coords = c("lon", "lat")) %>% 
+    st_bbox() %>% 
+    st_as_sfc()
+  
+  out$sf <- sf::st_make_grid(df, square = T, cellsize = c(1, 1)) %>% 
+    sf::st_sf() %>% 
+    dplyr::mutate(id = row_number())
+  
+  out$W <- nb2mat(poly2nb(out$sf, queen = T), style="B") #binary
+  message(paste0("Created an sf object with ", prod(dims), " rows"))
+  return(out)
+}
+
+#' @param input stan summary (summary(fit)$summary)
+getSubsetSummary <- function(input, regex){
+  as.data.frame(input) %>% 
+    rownames_to_column("parameter") %>% 
+    relocate(parameter) %>% 
+    filter(str_detect(parameter, regex))
+}
+
+#' @param W binary contiguity matrix (must be complete)
+prep4MCAR <- function(W){
+  
+  # create sparse matrices
+  W <- Matrix::Matrix(W, sparse = TRUE)
+  D <- Matrix::Diagonal( x = Matrix::rowSums(W) )
+  I <- Matrix::Diagonal(nrow(W))
+  
+  C <- I - D + W
+  
+  # Eigenvalues of C
+  C_eigenvalues <- eigen(C)$values
+  
+  # get the CRS representation of C
+  crs <- rstan::extract_sparse_parts(C)
+  nC_w <- length(crs$w)
+  
+  # prepare output list
+  return(
+    list(C_eigenvalues = C_eigenvalues, 
+         nC_w = nC_w,
+         C_w = crs$w,
+         C_v = crs$v,
+         C_u = crs$u,
+         D_id_C_w = which(crs$w != 1),
+         offD_id_C_w = which(crs$w == 1))
+  )
+}
+
+```
+
+## Introduction
+
+Here is a reference [@RN546].
+
+The MCAR model is generally specified as a $MK$-dimensional multivariate normal distribution with a zero mean vector, $\mathbf{0}$, and precision matrix, $\mathbf{\Omega}^A$. 
+
+$$
+\mathbf{y} \sim \jdist{N}{\mathbf{0}, \left( \mathbf{\Omega}^A \right)^{-1}}
+$$
+
+
+The simpliest form of the MCAR uses the following precision matrix 
+
+$$
+\mathbf{\Omega}^A = \mathbf{\Omega}^S \bigotimes \mathbf{\Omega}^R,
+$$
+where $\bigotimes$ is the Kronecker product, $\mathbf{\Omega}^S$ is the spatial matrix of size $M \times M$ and $\mathbf{\Omega}^R$ is the between-disease precision matrix of size $K \times K$. 
+
+The spatial matrix, $\mathbf{\Omega}^S$, is 
+
+$$
+\begin{align}
+\mathbf{\Omega}^S &= \mathbf{L} - \rho \mathbf{W} = \mathbf{I} - \rho \mathbf{C}
+\\
+\mathbf{C} &= \mathbf{I} - \mathbf{D} + \mathbf{W},
+\end{align}
+$$
+where $\mathbf{W} \in \left[ 0,1 \right]^{M \times M}$ is a binary neighborhood matrix, $\mathbf{D}$ is a diagonal matrix with the number of neighbors of each area, $\mathbf{L}$ is a diagonal matrix with elements, $1-\rho + \rho D_{11}, \dots, 1-\rho + \rho D_{MM}$ and $\rho \in (0,1)$ is the common spatial smoothing parameter. The spatial matrix will be very sparse; a property we'll leverage later. 
+
+To use the MCAR prior in practice we require the calculation of the following log-likelihood. 
+
+$$
+-0.5 \left[ n \text{log}\left( 2\pi \right) - \text{log}\left( \left| \mathbf{\Omega}^A \right| \right) + (\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y}) \right]
+$$
+
+To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$.
+
+## Determinant
+
+Using well known algebra rules one can show that,
+
+$$
+\begin{align}
+    \jdist{log}{ \left| \mathbf{\Omega}^A \right| } &= \jdist{log}{ \left| \mathbf{\Omega}^S \bigotimes \mathbf{\Omega}^R \right| }
+    \\
+    &= \jdist{log}{ \left| \mathbf{\Omega}^S \right|^K \left| \mathbf{\Omega}^R \right|^M }
+    \\
+    &= K \jdist{log}{ \left| \mathbf{\Omega}^S \right| } + M \jdist{log}{ \left| \mathbf{\Omega}^R \right| }. 
+\end{align}
+$$
+
+Following work by Donegan [@Donegan2021] we can derive $\jdist{log}{ \left| \mathbf{\Omega}^S \right|^K$ efficiently via,
+
+$$
+K \sum_{p=1}^M \jdist{log}{ 1 - \rho \lambda_p },
+$$
+where $\lambda_i$ is the $i$th eigenvalue. Consider the following example.  
+
+```{r}
+M <- 100 # set number of areas
+rho <- 0.95 # fix rho
+W <- getGRID(M)$W # generate grid with binary weight matrix
+M <- nrow(W) # reset number of areas
+
+# Spatial precision matrix
+I <- diag(x=1, nrow = M)
+D <- diag(rowSums(W))
+C <- I - D + W
+Omega_S = I - rho * C
+
+# Eigenvalues
+lambda <- eigen(C)$values
+
+# check identity
+sum(log(1-rho*lambda))
+determinant(Omega_S, logarithm = TRUE)$modulus
+```
+
+
+Further linear algebra rules can be used to show that $\left| \mathbf{\Omega}^R \right|$ is equal to the product of the diagonal entries of the lower Cholesky of $\mathbf{\sum}^R$ where $\mathbf{\sum}^R = \left( \mathbf{\Omega}^R \right)^{-1}$ is the covariance matrix characterizing the dependence between $K$ risk factors. Consider the following example,
+
+```{r}
+# define an arbitrary precision matrix
+Prec <- matrix(c(1.2, 0.7, 1,   1,
+                    0.7, 3,   1,   1.1,
+                    1,   1,   2,   0.8,
+                    1,   1.1, 0.8, 0.3), byrow = T, ncol = 4)
+Prec <- Prec %*% t(Prec) # ensures positive definite
+
+# get covariance matrix
+Cov <- solve(Prec)
+
+# get diagonal entries of lower cholesky
+Cov_chol_d = diag(t(chol(Cov)))
+
+# check identity
+-2*sum(log(Cov_chol_d))
+determinant(Prec, logarithm = T)$modulus
+```
+
+Conveniently, standard practice is to place a prior on the lower Cholesky of the covariance matrix rather than the precision matrix directly. Thus, this identity allows us to derive the correct determinant without deriving the precision first. 
+
+## Squared term
+
+It is important to derive an efficient manner to calculate the squared term, $(\mt{y})' \bm{\Omega}^A (\mt{y})$. The Kronecker product, and left and right multiplications involved in this component requires $3M^2K^2$ scalar multiplications.
+
+## References
+
+<div id="refs"></div>

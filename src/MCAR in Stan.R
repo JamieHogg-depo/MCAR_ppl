@@ -45,7 +45,7 @@ getSubsetSummary <- function(input, regex){
 }
 
 #' @param W binary contiguity matrix (must be complete)
-prep4MCARt1 <- function(W){
+prep4MCAR <- function(W){
   
   # create sparse matrices
   W <- Matrix::Matrix(W, sparse = TRUE)
@@ -73,6 +73,16 @@ prep4MCARt1 <- function(W){
   )
 }
 
+## Compile models ## -----------------------------------------------------------
+
+comp_n <- stan_model(file = "src/stan/MCAR_naive.stan")
+expose_stan_functions(comp_n)
+comp_e <- stan_model(file = "src/stan/MCAR_eff.stan")
+comp_ef <- stan_model(file = "src/stan/MCAR_stanform.stan")
+expose_stan_functions(comp_ef)
+comp_ef2 <- stan_model(file = "src/stan/MCAR_stanform2.stan")
+expose_stan_functions(comp_ef2)
+
 ## Generate data ## ------------------------------------------------------------
 
 M <- 1000
@@ -85,9 +95,10 @@ n <- M*K
 I <- diag(x=1, nrow = M)
 D <- diag(rowSums(W))
 C <- I - D + W
-rho <- 0.9
+rho <- 0.4
 Omega_S = I - rho * C
 Omega_Ss <- as(Omega_S, "sparseMatrix")
+C_for_stan <- prep4MCAR(W)
 
 # get bounds for rho
 D_inv_sqr <- diag((rowSums(W))^(-1/2))
@@ -124,31 +135,35 @@ Sigma_A <- solve(Omega_A) # BOTTLENECK: 3 mins for 6000x6000
 Sys.time()-s
 
 # Get random effects
-set.seed(45)
+set.seed(80)
 y_v <- MASS::mvrnorm(1, rep(0,M*K), Sigma_A)
 y_mat <- matrix(y_v, nrow = M, ncol = K, byrow = T)
 
-## Compile models ## -----------------------------------------------------------
+## Check Stan functions ## -----------------------------------------------------
 
-comp_n <- stan_model(file = "working_src/MCAR/MCAR_naive.stan")
-comp_e <- stan_model(file = "working_src/MCAR/MCAR_eff.stan")
-comp_ef <- stan_model(file = "working_src/MCAR/MCAR_stanform.stan")
+# Theses all give identical lpdf
+standardMCAR_lpdf(y_v, rep(0,M*K), Omega_A)
+MCARt1_lpdf(y_mat, rho, Omega_R, Sigma_R, Omega_S, C, C_for_stan$C_eigenvalues, M, K)
+MCARt2_lpdf(y_mat, rho, Omega_R, Sigma_R, 
+            C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, M, K)
 
-## Naive ## --------------------------------------------------------------------
+## Naive ## ------------------------------------------------------------------
 
 # data list
 data <- list(M = M, K = K,
-             y_vec = y_v, 
+             y_vec = y_v,
              y = y_mat, y_mat = y_mat, C_eigenvalues = C_eigenvalues,
-             C = C, zero = rep(0, M*K), rho = 0.95)
+             C = C, zero = rep(0, M*K))
 
 # fit model
 m_s <- Sys.time()
-fit_n <- sampling(object = comp_n, 
-                data = data, 
+fit_n <- sampling(object = comp_n,
+                data = data,
                 chains = 4, iter = 2000, warmup = 1000,
-                cores = 4, 
-                pars = c("Omega_R", "Omega_A", "Omega_S"), 
+                cores = 4,
+                pars = c("Omega_R", "Omega_A", "Omega_S"),
                 include = F)
 (rtmins_n <- as.numeric(Sys.time() - m_s, units = "mins"))
 
@@ -162,7 +177,7 @@ summ_n <- summary(fit_n)$summary
 data <- list(M = M, K = K,
              y_vec = y_v, 
              y = y_mat, y_mat = y_mat, C_eigenvalues = C_eigenvalues,
-             C = C, zero = rep(0, M*K), rho = 0.95)
+             C = C, zero = rep(0, M*K))
 
 # fit model
 m_s <- Sys.time()
@@ -199,20 +214,44 @@ fit_ef <- sampling(object = comp_ef,
 print(fit_ef, digits_summary = 3)
 summ_ef <- summary(fit_ef)$summary
 
+## Efficient - with function and sparse matrix ## ------------------------------
+
+# data list
+data <- list(M = M, K = K,
+             y_mat = y_mat)
+data <- c(C_for_stan, data)
+
+# fit model
+m_s <- Sys.time()
+fit_ef2 <- sampling(object = comp_ef2, 
+                   data = data, 
+                   chains = 4, iter = 2000, warmup = 1000,
+                   cores = 4, 
+                   pars = c("Sigma_R", "Omega_R"), 
+                   include = F)
+(rtmins_ef2 <- as.numeric(Sys.time() - m_s, units = "mins"))
+
+# Summarise results
+print(fit_ef2, digits_summary = 3)
+summ_ef2 <- summary(fit_ef2)$summary
+
 ## Compare ## ------------------------------------------------------------------
 
 # Identical inference
 getSubsetSummary(summ_n, "ll_mcar|rho")
 getSubsetSummary(summ_e, "ll_mcar|rho")
 getSubsetSummary(summ_ef, "ll_mcar|rho")
+getSubsetSummary(summ_ef2, "ll_mcar|rho")
 
 # Run time 
 rtmins_e
 rtmins_n
 rtmins_ef
+rtmins_ef2
 
 # Comparison of sampling efficiency
 # ESS per minute on average
+summary(as.data.frame(summ_ef2)$n_eff/rtmins_ef2)
 summary(as.data.frame(summ_ef)$n_eff/rtmins_ef)
 summary(as.data.frame(summ_e)$n_eff/rtmins_e)
 summary(as.data.frame(summ_n)$n_eff/rtmins_n)

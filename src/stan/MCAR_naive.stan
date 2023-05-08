@@ -1,4 +1,10 @@
 functions{
+real standardMCAR_lpdf(
+	vector y_vec,
+	vector zero,
+	matrix Omega_A){
+	return multi_normal_prec_lpdf( y_vec | zero, Omega_A );
+}
 matrix kronecker_prod(matrix A, matrix B) {
   matrix[rows(A) * rows(B), cols(A) * cols(B)] C;
   int m;

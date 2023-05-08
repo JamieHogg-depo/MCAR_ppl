@@ -12,7 +12,7 @@ functions{
 **
 @return Log probability density
 */
-real MCARt1_lpdf(
+real MCARt2_lpdf(
 	matrix x_mat,				// input pars in matrix form M x K
 	real rho, 					// spatial smoothing parameter
 	matrix Omega_R, 			// Precision matrix for factors
@@ -38,7 +38,7 @@ real MCARt1_lpdf(
 			// Calculate diagonal elements of ImrhoJ
 			ImrhoC [ D_id_C_w ] = 1 - rho * C_w[ D_id_C_w ];
 			for(k in 1:K){
-				A_S[,k] = crs_matrix_times_vector(M, M, ImrhoC, C_v, C_u, x_mat[,k] );
+				A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x_mat[,k] );
 			}
 		real sq_term = sum( A_R .* A_S' );
 		for(i in 1:M){
@@ -52,11 +52,17 @@ real MCARt1_lpdf(
 }
 }
 data {
-  int<lower=1> M; // number of areas
-  int<lower=1> K; // dimension of health conditions
-  matrix[M,K] y_mat;
-  vector[M] C_eigenvalues;
-  matrix[M,M] C;
+	int<lower=1> M; 				// number of areas
+	int<lower=1> K; 				// dimension of health conditions
+	matrix[M,K] y_mat;
+	// sparse components of C matrix
+	vector[M] C_eigenvalues;
+	int nC_w;
+	vector[nC_w] C_w; 
+	int C_v[nC_w]; 
+	int C_u[M+1]; 
+	int offD_id_C_w[nC_w - M];		// indexes for off diagonal terms
+	int D_id_C_w[M]; 				// indexes for diagonal terms - length M	
 }
 parameters {
   cholesky_factor_corr[K] Cor_R_chol; // Lower Cholesky of R
@@ -87,9 +93,9 @@ transformed parameters {
 model {
   sd_R ~ cauchy(0, 5); // prior for sigma
   Cor_R_chol ~ lkj_corr_cholesky(2.0); // prior for cholesky factor of a correlation matrix
-  y_mat ~ MCARt1(rho, Omega_R, Sigma_R, Omega_S, C, C_eigenvalues, M, K);
+  target += MCARt2_lpdf(y_mat | rho, Omega_R, Sigma_R, C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, M, K);
 }
 generated quantities{
-	real ll_mcar = MCARt1_lpdf( y_mat | rho, Omega_R, Sigma_R, Omega_S, C, C_eigenvalues, M, K );
+	real ll_mcar = MCARt2_lpdf( y_mat | rho, Omega_R, Sigma_R, C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, M, K);
 }
 
