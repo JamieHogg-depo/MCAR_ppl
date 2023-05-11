@@ -78,7 +78,7 @@ n <- M*K
 # Spatial precision matrix
 I <- diag(x=1, nrow = M)
 D <- diag(rowSums(W))
-C <- I - D + W
+C <- I - D + W # Leroux setup
 rho <- 0.95
 Omega_S = I - rho * C
 Omega_Ss <- as(Omega_S, "sparseMatrix")
@@ -263,6 +263,20 @@ Sys.time()-s # about 4.3 times faster than v4
 s=Sys.time()
 (t(y) %*% kronecker(Omega_Ss, Omega_R) %*% y) # v4
 Sys.time()-s # about 2.46 times faster than v2
+
+## Using P0355 ## --------------------------------------------------------------
+
+# pCAR MCAR
+
+# spatial precision
+Omega_S2 = D - rho * W
+C <- solve(D) %*% W
+D %*% (I - rho * C)
+lamba_C <- eigen(C)$values
+
+# log det
+determinant(D - rho * W, logarithm = T)
+sum(log(1-rho*lamba_C)) + log(prod(diag(D)))
 
 ## DEPREC ## -------------------------------------------------------------------
 
