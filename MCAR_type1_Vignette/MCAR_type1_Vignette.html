@@ -194,9 +194,12 @@ pre code {
 </div>
 
 
-<div id="introduction" class="section level2">
-<h2>Introduction</h2>
-<p>Here is a reference <span class="citation">[1]</span>.</p>
+<div id="introduction" class="section level1">
+<h1>Introduction</h1>
+<p>The Leroux model proposed by <span class="citation">[1]</span> was extended to the multivariate setting by <span class="citation">[2]</span>. A similar setup was used by <span class="citation">[3]</span></p>
+</div>
+<div id="the-mcar" class="section level1">
+<h1>The MCAR</h1>
 <p>The MCAR model is generally specified as a <span class="math inline">\(MK\)</span>-dimensional multivariate normal distribution with a zero mean vector, <span class="math inline">\(\mathbf{0}\)</span>, and precision matrix, <span class="math inline">\(\mathbf{\Omega}^A\)</span>.</p>
 <p><span class="math display">\[
 \mathbf{y} \sim \text{N}\left( \mathbf{0}, \left( \mathbf{\Omega}^A \right)^{-1} \right)
@@ -205,22 +208,51 @@ pre code {
 <p><span class="math display">\[
 \mathbf{\Omega}^A = \mathbf{\Omega}^S \bigotimes \mathbf{\Omega}^R,
 \]</span> where <span class="math inline">\(\bigotimes\)</span> is the Kronecker product, <span class="math inline">\(\mathbf{\Omega}^S\)</span> is the spatial matrix of size <span class="math inline">\(M \times M\)</span> and <span class="math inline">\(\mathbf{\Omega}^R\)</span> is the between-disease precision matrix of size <span class="math inline">\(K \times K\)</span>.</p>
+<div id="the-proper-car-prior" class="section level2">
+<h2>The proper CAR prior</h2>
 <p>The spatial matrix, <span class="math inline">\(\mathbf{\Omega}^S\)</span>, is</p>
+<p><span class="math display">\[
+\begin{align}
+\mathbf{\Omega}^S &amp;= \mathbf{D} - \rho \mathbf{W} = \mathbf{D} \left(  \mathbf{I} - \rho \mathbf{J}  \right)
+\\
+\mathbf{J} &amp;= \mathbf{D}^{-1} \mathbf{W},
+\end{align}
+\]</span> where <span class="math inline">\(\mathbf{W} \in \left[ 0,1 \right]^{M \times M}\)</span> is a binary neighborhood matrix, <span class="math inline">\(\mathbf{D}\)</span> is a diagonal matrix with the number of neighbors of each area, and <span class="math inline">\(\rho \in (0,1)\)</span> is the common spatial smoothing parameter. The spatial matrix will be very sparse; a property we’ll leverage later.</p>
+<div id="determinant" class="section level3">
+<h3>Determinant</h3>
+<p>Using well known algebra rules one can show that,</p>
+<p><span class="math display">\[
+\begin{align}
+    \text{log}\left(  \left| \mathbf{\Omega}^A \right|  \right) &amp;= \text{log}\left(  \left| \mathbf{\Omega}^S \bigotimes \mathbf{\Omega}^R \right|  \right)
+    \\
+    &amp;= \text{log}\left(  \left| \mathbf{\Omega}^S \right|^K \left| \mathbf{\Omega}^R \right|^M  \right)
+    \\
+    &amp;= \text{log}\left(  \left| \mathbf{D} \left(  \mathbf{I} - \rho \mathbf{J}  \right) \right|^K \left| \mathbf{\Omega}^R \right|^M  \right)
+    \\
+    &amp;= \text{log}\left(  \left| \mathbf{D} \right|^K \left| \mathbf{I} - \rho \mathbf{J} \right|^K \left| \mathbf{\Omega}^R \right|^M  \right)
+    \\
+    &amp;= K \text{log}\left(  \left| \mathbf{D} \right|  \right) + K \text{log}\left(  \left| \mathbf{I} - \rho \mathbf{J} \right|  \right) + M \text{log}\left(  \left| \mathbf{\Omega}^R \right|  \right). 
+\end{align}
+\]</span></p>
+<p>Following work</p>
+</div>
+</div>
+<div id="leroux-prior" class="section level2">
+<h2>Leroux prior</h2>
+<p>Under the Leroux setup, the spatial matrix, <span class="math inline">\(\mathbf{\Omega}^S\)</span>, is</p>
 <p><span class="math display">\[
 \begin{align}
 \mathbf{\Omega}^S &amp;= \mathbf{L} - \rho \mathbf{W} = \mathbf{I} - \rho \mathbf{C}
 \\
 \mathbf{C} &amp;= \mathbf{I} - \mathbf{D} + \mathbf{W},
 \end{align}
-\]</span> where <span class="math inline">\(\mathbf{W} \in \left[ 0,1 \right]^{M \times M}\)</span> is a binary neighborhood matrix, <span class="math inline">\(\mathbf{D}\)</span> is a diagonal matrix with the number of neighbors of each area, <span class="math inline">\(\mathbf{L}\)</span> is a diagonal matrix with elements, <span class="math inline">\(1-\rho + \rho D_{11}, \dots, 1-\rho + \rho D_{MM}\)</span> and <span class="math inline">\(\rho \in (0,1)\)</span> is the common spatial smoothing parameter. The spatial matrix will be very sparse; a property we’ll leverage later.</p>
-<p>To use the MCAR prior in practice we require the calculation of the following log-likelihood.</p>
+\]</span> where <span class="math inline">\(\mathbf{L}\)</span> is a diagonal matrix with elements, <span class="math inline">\(1-\rho + \rho D_{11}, \dots, 1-\rho + \rho D_{MM}\)</span>. To use the MCAR prior in practice we require the calculation of the following log-likelihood.</p>
 <p><span class="math display">\[
 -0.5 \left[ n \text{log}\left( 2\pi \right) - \text{log}\left( \left| \mathbf{\Omega}^A \right| \right) + (\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y}) \right]
 \]</span></p>
 <p>To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, <span class="math inline">\((\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y})\)</span>.</p>
-</div>
-<div id="determinant" class="section level2">
-<h2>Determinant</h2>
+<div id="determinant-1" class="section level3">
+<h3>Determinant</h3>
 <p>Using well known algebra rules one can show that,</p>
 <p><span class="math display">\[
 \begin{align}
@@ -231,7 +263,7 @@ pre code {
     &amp;= K \text{log}\left(  \left| \mathbf{\Omega}^S \right|  \right) + M \text{log}\left(  \left| \mathbf{\Omega}^R \right|  \right). 
 \end{align}
 \]</span></p>
-<p>Following work by Donegan <span class="citation">[2]</span> we can derive <span class="math inline">\(\text{log}\left(  \left| \mathbf{\Omega}^S \right|^K  \right)\)</span> efficiently via,</p>
+<p>Following work by Donegan <span class="citation">[4]</span> we can derive <span class="math inline">\(\text{log}\left(  \left| \mathbf{\Omega}^S \right|^K  \right)\)</span> efficiently via,</p>
 <p><span class="math display">\[
 K \sum_{i=1}^M \text{log}\left(  1 - \rho \lambda_i  \right),
 \]</span> where <span class="math inline">\(\lambda_i\)</span> is the <span class="math inline">\(i\)</span>th eigenvalue. Consider the following example.</p>
@@ -279,8 +311,8 @@ Cov_chol_d = diag(t(chol(Cov)))
 ## [1] TRUE</code></pre>
 <p>Conveniently, standard practice is to place a prior on the lower Cholesky of the covariance matrix rather than the precision matrix directly. Thus, this identity allows us to derive the correct determinant without deriving the precision first.</p>
 </div>
-<div id="squared-term" class="section level2">
-<h2>Squared term</h2>
+<div id="squared-term" class="section level3">
+<h3>Squared term</h3>
 <p>It is important to derive an efficient manner to calculate the squared term, <span class="math inline">\((\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y})\)</span>. The Kronecker product, and left and right multiplications involved in this component requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications.</p>
 <p>The approach we take is to reformat the multivariate normal as the matrix normal (MN) distribution. First we restructure the vector, <span class="math inline">\(\mathbf{y}\)</span>, into a matrix, <span class="math inline">\(\mathbf{Y}\)</span>, of size <span class="math inline">\(K \times M\)</span> by columns.</p>
 <p>Generally the MN is written as</p>
@@ -383,8 +415,8 @@ sum(A_R * t(A_S)); cm &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
 <p>As expected, we get the same value but a little faster! The trace method took 0.01 seconds, while the componentwise method only took 0.01 seconds.</p>
 </div>
-<div id="mcart1-implementation" class="section level2">
-<h2>MCARt1 implementation</h2>
+<div id="mcart1-implementation" class="section level3">
+<h3>MCARt1 implementation</h3>
 <p>To convince the reader of the validity of our efficient Stan implementation we use the <code>expose_stan_functions</code> function from <code>rstan</code> to run the functions directly inside <code>R</code>. In the following code chunks I define both the naive (or standard) approach and our efficient approach for fitting the MCAR in Stan. Our efficient implementation can be found below</p>
 <pre class="r"><code># Standard implementation
 standard_model &lt;- &quot;
@@ -555,34 +587,38 @@ y_mat &lt;- matrix(y_v, nrow = M, ncol = K, byrow = T)
 ## Check log-likelihoods ## ----------------------------------------------------
 
 # Standard or naive
-s=Sys.time(); standardMCAR_lpdf(y_v, rep(0,M*K), Omega_A); Sys.time()-s</code></pre>
-<pre><code>## [1] -1204.891</code></pre>
-<pre><code>## Time difference of 2.783395 secs</code></pre>
-<pre class="r"><code># naive efficient
+s=Sys.time(); standardMCAR_lpdf(y_v, rep(0,M*K), Omega_A); Sys.time()-s
+
+# naive efficient
 s=Sys.time()
-MCARnet1_lpdf(y_mat, rho, Omega_R, Sigma_R, Omega_S, C, C_for_stan$C_eigenvalues, M, K)</code></pre>
-<pre><code>## [1] -1204.891</code></pre>
-<pre class="r"><code>Sys.time()-s</code></pre>
-<pre><code>## Time difference of 0.01294899 secs</code></pre>
-<pre class="r"><code># Efficient (or fast)
+MCARnet1_lpdf(y_mat, rho, Omega_R, Sigma_R, Omega_S, C, C_for_stan$C_eigenvalues, M, K)
+Sys.time()-s
+
+# Efficient (or fast)
 s=Sys.time() 
 MCARt1_lpdf(y_mat, rho, Omega_R, Sigma_R, 
             C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
             C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
-            C_for_stan$C_eigenvalues, M, K)</code></pre>
-<pre><code>## [1] -1204.891</code></pre>
-<pre class="r"><code>Sys.time()-s</code></pre>
-<pre><code>## Time difference of 0.002949953 secs</code></pre>
+            C_for_stan$C_eigenvalues, M, K)
+Sys.time()-s</code></pre>
 <p>Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With <code>M=1000</code> and <code>K=3</code> we find that the fast implementation is around 150 times faster.</p>
 </div>
-<div id="references" class="section level2">
-<h2>References</h2>
+</div>
+</div>
+<div id="references" class="section level1">
+<h1>References</h1>
 <div id="refs" class="references csl-bib-body">
+<div id="ref-RN366" class="csl-entry">
+<div class="csl-left-margin">1. </div><div class="csl-right-inline">Leroux, B., Lei, X., Breslow, N.: Estimation of disease rates in small areas: A new mixed model for spatial dependence. In: Statistical models in epidemiology, the environment, and clinical trials. pp. 179–191. Springer (2000)</div>
+</div>
 <div id="ref-RN546" class="csl-entry">
-<div class="csl-left-margin">1. </div><div class="csl-right-inline">MacNab, Y.C.: On bayesian shared component disease mapping and ecological regression with errors in covariates. Statistics in medicine. 29, 1239–1249 (2010)</div>
+<div class="csl-left-margin">2. </div><div class="csl-right-inline">MacNab, Y.C.: On bayesian shared component disease mapping and ecological regression with errors in covariates. Statistics in medicine. 29, 1239–1249 (2010)</div>
+</div>
+<div id="ref-RN574" class="csl-entry">
+<div class="csl-left-margin">3. </div><div class="csl-right-inline">Wang, W., Liao, F., Yin, F., Ma, Y.: Mapping the short-term exposure–response relationships between environmental factors and health outcomes and identifying the causes of heterogeneity: A multivariate-conditional-meta-autoregression-based two-stage strategy. Spatial Statistics. 53, 100720 (2023). https://doi.org/<a href="https://doi.org/10.1016/j.spasta.2022.100720">https://doi.org/10.1016/j.spasta.2022.100720</a></div>
 </div>
 <div id="ref-Donegan2021" class="csl-entry">
-<div class="csl-left-margin">2. </div><div class="csl-right-inline">Donegan, C.: Building spatial conditional autoregressive (CAR) models in the stan programming language. OSF Preprints. (2021)</div>
+<div class="csl-left-margin">4. </div><div class="csl-right-inline">Donegan, C.: Building spatial conditional autoregressive (CAR) models in the stan programming language. OSF Preprints. (2021)</div>
 </div>
 </div>
 </div>

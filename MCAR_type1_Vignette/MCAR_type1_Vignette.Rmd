@@ -91,9 +91,11 @@ prep4MCAR <- function(W){
 
 ```
 
-## Introduction
+# Introduction
 
-Here is a reference [@RN546].
+The Leroux model proposed by [@RN366] was extended to the multivariate setting by [@RN546]. A similar setup was used by [@RN574]
+
+# The MCAR
 
 The MCAR model is generally specified as a $MK$-dimensional multivariate normal distribution with a zero mean vector, $\mathbf{0}$, and precision matrix, $\mathbf{\Omega}^A$. 
 
@@ -109,7 +111,42 @@ $$
 $$
 where $\bigotimes$ is the Kronecker product, $\mathbf{\Omega}^S$ is the spatial matrix of size $M \times M$ and $\mathbf{\Omega}^R$ is the between-disease precision matrix of size $K \times K$. 
 
+## The proper CAR prior
+
 The spatial matrix, $\mathbf{\Omega}^S$, is 
+
+$$
+\begin{align}
+\mathbf{\Omega}^S &= \mathbf{D} - \rho \mathbf{W} = \mathbf{D} \lb{ \mathbf{I} - \rho \mathbf{J} }
+\\
+\mathbf{J} &= \mathbf{D}^{-1} \mathbf{W},
+\end{align}
+$$
+where $\mathbf{W} \in \left[ 0,1 \right]^{M \times M}$ is a binary neighborhood matrix, $\mathbf{D}$ is a diagonal matrix with the number of neighbors of each area, and $\rho \in (0,1)$ is the common spatial smoothing parameter. The spatial matrix will be very sparse; a property we'll leverage later.
+
+### Determinant
+
+Using well known algebra rules one can show that,
+
+$$
+\begin{align}
+    \jdist{log}{ \left| \mathbf{\Omega}^A \right| } &= \jdist{log}{ \left| \mathbf{\Omega}^S \bigotimes \mathbf{\Omega}^R \right| }
+    \\
+    &= \jdist{log}{ \left| \mathbf{\Omega}^S \right|^K \left| \mathbf{\Omega}^R \right|^M }
+    \\
+    &= \jdist{log}{ \left| \mathbf{D} \lb{ \mathbf{I} - \rho \mathbf{J} } \right|^K \left| \mathbf{\Omega}^R \right|^M }
+    \\
+    &= \jdist{log}{ \left| \mathbf{D} \right|^K \left| \mathbf{I} - \rho \mathbf{J} \right|^K \left| \mathbf{\Omega}^R \right|^M }
+    \\
+    &= K \jdist{log}{ \left| \mathbf{D} \right| } + K \jdist{log}{ \left| \mathbf{I} - \rho \mathbf{J} \right| } + M \jdist{log}{ \left| \mathbf{\Omega}^R \right| }. 
+\end{align}
+$$
+
+Following work
+
+## Leroux prior
+
+Under the Leroux setup, the spatial matrix, $\mathbf{\Omega}^S$, is 
 
 $$
 \begin{align}
@@ -118,9 +155,7 @@ $$
 \mathbf{C} &= \mathbf{I} - \mathbf{D} + \mathbf{W},
 \end{align}
 $$
-where $\mathbf{W} \in \left[ 0,1 \right]^{M \times M}$ is a binary neighborhood matrix, $\mathbf{D}$ is a diagonal matrix with the number of neighbors of each area, $\mathbf{L}$ is a diagonal matrix with elements, $1-\rho + \rho D_{11}, \dots, 1-\rho + \rho D_{MM}$ and $\rho \in (0,1)$ is the common spatial smoothing parameter. The spatial matrix will be very sparse; a property we'll leverage later. 
-
-To use the MCAR prior in practice we require the calculation of the following log-likelihood. 
+where $\mathbf{L}$ is a diagonal matrix with elements, $1-\rho + \rho D_{11}, \dots, 1-\rho + \rho D_{MM}$. To use the MCAR prior in practice we require the calculation of the following log-likelihood. 
 
 $$
 -0.5 \left[ n \text{log}\left( 2\pi \right) - \text{log}\left( \left| \mathbf{\Omega}^A \right| \right) + (\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y}) \right]
@@ -128,7 +163,7 @@ $$
 
 To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$.
 
-## Determinant
+### Determinant
 
 Using well known algebra rules one can show that,
 
@@ -193,7 +228,7 @@ determinant(Prec, logarithm = T)$modulus
 
 Conveniently, standard practice is to place a prior on the lower Cholesky of the covariance matrix rather than the precision matrix directly. Thus, this identity allows us to derive the correct determinant without deriving the precision first. 
 
-## Squared term
+### Squared term
 
 It is important to derive an efficient manner to calculate the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$. The Kronecker product, and left and right multiplications involved in this component requires $3M^2K^2$ scalar multiplications.
 
@@ -313,7 +348,7 @@ sum(A_R * t(A_S)); cm <- Sys.time()-s
 
 As expected, we get the same value but a little faster! The trace method took `r round(as.numeric(tm, units = "secs"), 2)` seconds, while the componentwise method only took `r round(as.numeric(cm, units = "secs"), 2)` seconds. 
 
-## MCARt1 implementation
+### MCARt1 implementation
 
 To convince the reader of the validity of our efficient Stan implementation we use the `expose_stan_functions` function from `rstan` to run the functions directly inside `R`. In the following code chunks I define both the naive (or standard) approach and our efficient approach for fitting the MCAR in Stan. 
 Our efficient implementation can be found below
@@ -437,7 +472,7 @@ real MCARt1_lpdf(
 
 Now that we have declared the two functions, we compile and expose them to the `R` environment. 
 
-```{r eval=TRUE}
+```{r eval=FALSE}
 comp_standard <- stan_model(model_code = standard_model)
 expose_stan_functions(comp_standard)
 
@@ -450,7 +485,7 @@ expose_stan_functions(comp_eff)
 
 All that is left to do is generate some fake data and ensure that all three functions give identical log-likelihoods like we expect. 
 
-```{r eval=TRUE}
+```{r eval=FALSE}
 # number of areas
 M <- 1000
 # number of factors
@@ -514,6 +549,6 @@ Sys.time()-s
 
 Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With `M=1000` and `K=3` we find that the fast implementation is around 150 times faster.  
 
-## References
+# References
 
 <div id="refs"></div>
