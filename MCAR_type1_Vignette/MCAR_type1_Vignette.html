@@ -218,9 +218,9 @@ pre code {
 <p>The spatial matrix, <span class="math inline">\(\mathbf{\Omega}^S\)</span>, is</p>
 <p><span class="math display">\[
 \begin{align}
-\mathbf{\Omega}^S &amp;= \mathbf{D} - \rho \mathbf{W} = \mathbf{D} \left(  \mathbf{I} - \rho \mathbf{J}  \right)
+\mathbf{\Omega}^S &amp;= \mathbf{D} - \rho \mathbf{W} = \mathbf{D} \left(  \mathbf{I} - \rho \mathbf{C}  \right)
 \\
-\mathbf{J} &amp;= \mathbf{D}^{-1} \mathbf{W},
+\mathbf{C} &amp;= \mathbf{D}^{-1} \mathbf{W},
 \end{align}
 \]</span> where <span class="math inline">\(\mathbf{W} \in \left[ 0,1 \right]^{M \times M}\)</span> is a binary neighborhood matrix, <span class="math inline">\(\mathbf{D}\)</span> is a diagonal matrix with the number of neighbors of each area, and <span class="math inline">\(\rho \in (0,1)\)</span> is the common spatial smoothing parameter. The spatial matrix will be very sparse; a property we’ll leverage later.</p>
 <div id="determinant" class="section level3">
@@ -232,16 +232,16 @@ pre code {
     \\
     &amp;= \text{log}\left(  \left| \mathbf{\Omega}^S \right|^K \left| \mathbf{\Omega}^R \right|^M  \right)
     \\
-    &amp;= \text{log}\left(  \left| \mathbf{D} \left(  \mathbf{I} - \rho \mathbf{J}  \right) \right|^K \left| \mathbf{\Omega}^R \right|^M  \right)
+    &amp;= \text{log}\left(  \left| \mathbf{D} \left(  \mathbf{I} - \rho \mathbf{C}  \right) \right|^K \left| \mathbf{\Omega}^R \right|^M  \right)
     \\
-    &amp;= \text{log}\left(  \left| \mathbf{D} \right|^K \left| \mathbf{I} - \rho \mathbf{J} \right|^K \left| \mathbf{\Omega}^R \right|^M  \right)
+    &amp;= \text{log}\left(  \left| \mathbf{D} \right|^K \left| \mathbf{I} - \rho \mathbf{C} \right|^K \left| \mathbf{\Omega}^R \right|^M  \right)
     \\
-    &amp;= K \text{log}\left(  \left| \mathbf{D} \right|  \right) + K \text{log}\left(  \left| \mathbf{I} - \rho \mathbf{J} \right|  \right) + M \text{log}\left(  \left| \mathbf{\Omega}^R \right|  \right). 
+    &amp;= K \text{log}\left(  \left| \mathbf{D} \right|  \right) + K \text{log}\left(  \left| \mathbf{I} - \rho \mathbf{C} \right|  \right) + M \text{log}\left(  \left| \mathbf{\Omega}^R \right|  \right). 
 \end{align}
-\]</span> Above we’re shown how we partition <span class="math inline">\(\text{log}\left(  \left| \mathbf{\Omega}^A \right|  \right)\)</span> into three linear components. Given that the weight matrix, and thus, <span class="math inline">\(\mathbf{D}\)</span> are fixed, the first term is a constant that can be passed as data to Stan. Following work by Donegan <span class="citation">[2]</span>, the second term, <span class="math inline">\(\text{log}\left(  \left| \mathbf{I} - \rho \mathbf{J} \right|  \right)\)</span>, can be efficiently calculated using,</p>
+\]</span> Above we’re shown how we partition <span class="math inline">\(\text{log}\left(  \left| \mathbf{\Omega}^A \right|  \right)\)</span> into three linear components. Given that the weight matrix, and thus, <span class="math inline">\(\mathbf{D}\)</span> are fixed, the first term is a constant that can be passed as data to Stan. Following work by Donegan <span class="citation">[2]</span>, the second term, <span class="math inline">\(\text{log}\left(  \left| \mathbf{I} - \rho \mathbf{C} \right|  \right)\)</span>, can be efficiently calculated using,</p>
 <p><span class="math display">\[
 \sum_{i=1}^M \text{log}\left(  1 - \rho \lambda_i  \right),
-\]</span> where <span class="math inline">\(\lambda_i\)</span> is the <span class="math inline">\(i\)</span>th eigenvalue of <span class="math inline">\(\mathbf{J}\)</span>. Once again <span class="math inline">\(\mathbf{J}\)</span> is fixed and thus the eigenvalues can be passed to Stan as data. To support this formula, consider the following example.</p>
+\]</span> where <span class="math inline">\(\lambda_i\)</span> is the <span class="math inline">\(i\)</span>th eigenvalue of <span class="math inline">\(\mathbf{C}\)</span>. Once again <span class="math inline">\(\mathbf{C}\)</span> is fixed and thus the eigenvalues can be passed to Stan as data. To support this formula, consider the following example.</p>
 <pre class="r"><code>M &lt;- 6 # set number of areas
 rho &lt;- 0.95 # fix rho
 W &lt;- getGRID(M)$W # generate grid with binary weight matrix
@@ -250,16 +250,16 @@ M &lt;- nrow(W) # reset number of areas
 # Spatial precision matrix
 I &lt;- diag(x=1, nrow = M)
 D &lt;- diag(rowSums(W))
-J &lt;- solve(D) %*% W
-Omega_S &lt;- D %*% (I - rho * J)
+C &lt;-  solve(D) %*% W
+Omega_S &lt;- D %*% (I - rho * C)
 
 # Eigenvalues
-lambda &lt;- eigen(J)$values
+lambda &lt;- eigen(C)$values
 
 # check identity
 sum(log(1-rho*lambda))</code></pre>
 <pre><code>## [1] -2.28539</code></pre>
-<pre class="r"><code>determinant(I - rho * J, logarithm = TRUE)$modulus</code></pre>
+<pre class="r"><code>determinant(I - rho * C, logarithm = TRUE)$modulus</code></pre>
 <pre><code>## [1] -2.28539
 ## attr(,&quot;logarithm&quot;)
 ## [1] TRUE</code></pre>
@@ -352,17 +352,19 @@ Continuing with this setup, the squared term of the matrix normal distribution i
 \underbrace{\mathbf{A}^S}_{M \times K} &amp;= \mathbf{\Omega}^S \mathbf{Y}^T
 \\
 (\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y}) &amp;= \text{tr}\left(  \mathbf{A}^S \mathbf{A}^R  \right)
-\end{align}
-\]</span> or alternatively,</p>
+\end{align}.
+\]</span></p>
+<p>An alternative to deriving the trace of the matrix multiplication of <span class="math inline">\(\mathbf{A}^S\)</span> and <span class="math inline">\(\mathbf{A}^R\)</span> is to sum all the elements of the componentwise multiplication of <span class="math inline">\(\mathbf{A}^R\)</span> and <span class="math inline">\(\left(  \mathbf{A}^S  \right)^T\)</span>, which only involves <span class="math inline">\(MK(M + K + 1)\)</span> scalar multiplications. A final alternatively is to partition the diagonal matrix, <span class="math inline">\(\mathbf{D}\)</span>, out of <span class="math inline">\(\mathbf{\Omega}^S\)</span>. Thus,</p>
 <p><span class="math display">\[
 \begin{align}
 \underbrace{\mathbf{A}^R}_{K \times M} &amp;= \mathbf{\Omega}^R \mathbf{Y}
 \\
-\underbrace{\mathbf{A}^{*S}}_{M \times K} &amp;= \left(  \mathbf{I}-\rho\mathbf{W}  \right) \mathbf{Y}^T
+\underbrace{\mathbf{A}^{*S}}_{M \times K} &amp;= \left(  \mathbf{I}-\rho\mathbf{C}  \right) \mathbf{Y}^T
 \\
-(\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y}) &amp;= \sum \text{diag}\left( \mathbf{D} \right) \times \text{diag}\left(  \mathbf{A}^{*S} \mathbf{A}^R  \right),
+(\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y}) &amp;= \sum \left(  \text{diag}\left( \mathbf{D} \right) \times \text{diag}\left(  \mathbf{A}^{*S} \mathbf{A}^R  \right)  \right),
 \end{align}
-\]</span> where <span class="math inline">\(\times\)</span> is componentwise multiplication of the two vectors. Consider the following example,</p>
+\]</span> where <span class="math inline">\(\times\)</span> is componentwise multiplication of the two vectors. The benefit to this approach is that <span class="math inline">\(\mathbf{A}^{*S}\)</span> can be constructed using sparse functions in Stan.</p>
+<p>To grapple with and assess all these implementations, consider the following example with simulated data.</p>
 <pre class="r"><code>M &lt;- 1000; K &lt;- 3
 W &lt;- getGRID(M)$W
 M &lt;- nrow(W)
@@ -371,9 +373,9 @@ n &lt;- M*K
 # Spatial precision matrix
 I &lt;- diag(x=1, nrow = M)
 D &lt;- diag(rowSums(W))
-J &lt;- solve(D) %*% W
+C &lt;- C &lt;- solve(D) %*% W
 rho &lt;- 0.9
-Omega_S = D %*% (I - rho * J)
+Omega_S = D %*% (I - rho * C)
 
 # Risk factor matrices
 Omega_R &lt;- matrix(c(1.2, 0.7, 1,
@@ -410,46 +412,44 @@ s=Sys.time()
 A_S &lt;- Omega_S %*% t(Y); A_R &lt;- Omega_R %*% Y
 psych::tr(A_S %*% A_R)</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
-<pre class="r"><code># using M x K matrix
+<pre class="r"><code># Trace method: using M x K matrix
 s=Sys.time()
 A_S &lt;- Omega_S %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
 psych::tr(A_S %*% A_R); km2 &lt;- Sys.time()-s</code></pre>
-<pre><code>## [1] 2995.998</code></pre>
-<pre class="r"><code># Partition out diagonal matrix, D
-s=Sys.time()
-A_S &lt;- (I - rho * J) %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
-sum(diag(D)*diag(A_S %*% A_R)); km3 &lt;- Sys.time()-s</code></pre>
-<pre><code>## [1] 2995.998</code></pre>
-<p>Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took 0.2 seconds, while ours took 0.01 seconds. Unlike the standard approach which requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications, our approach only requires <span class="math inline">\(MK(M + 2K)\)</span>.</p>
-<p>An alternative to deriving the trace of the matrix multiplication of <span class="math inline">\(\mathbf{A}^S\)</span> and <span class="math inline">\(\mathbf{A}^R\)</span> is to sum all the elements of the componentwise multiplication of <span class="math inline">\(\mathbf{A}^R\)</span> and <span class="math inline">\(\left(  \mathbf{A}^S  \right)^T\)</span>, which only involves <span class="math inline">\(MK(M + K + 1)\)</span> scalar multiplications.</p>
-<pre class="r"><code># Standard squared term
-(t(y) %*% kronecker(Omega_S, Omega_R) %*% y) # v1</code></pre>
-<pre><code>##          [,1]
-## [1,] 2995.998</code></pre>
-<pre class="r"><code># trace method
-s=Sys.time()
-A_S &lt;- Omega_S %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
-psych::tr(A_S %*% A_R); tm &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
 <pre class="r"><code># componentwise method
 s=Sys.time()
 A_S &lt;- Omega_S %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
 sum(A_R * t(A_S)); cm &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
-<p>As expected, we get the same value but a little faster! The trace method took 0.01 seconds, while the componentwise method only took 0.01 seconds.</p>
+<pre class="r"><code># Partition out diagonal matrix, D
+s=Sys.time()
+A_S &lt;- (I - rho * C) %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
+sum(diag(D)*diag(A_S %*% A_R)); km3 &lt;- Sys.time()-s</code></pre>
+<pre><code>## [1] 2995.998</code></pre>
+<pre class="r"><code>## Time check ------------------------------------------------------------------
+
+data.frame(method = c(&quot;Standard&quot;, &quot;Trace&quot;, &quot;Componentwise&quot;, &quot;Partition&quot;),
+           time = c(st, km2, cm, km3)) %&gt;% 
+  mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
+<pre><code>##          method        time
+## 1      Standard 0.205472946
+## 2         Trace 0.009999990
+## 3 Componentwise 0.008203983
+## 4     Partition 0.038524866</code></pre>
+<p>Success! By using the matrix normal setup, we recover the same squared error term, but much faster.</p>
 </div>
 <div id="mcart1-implementation" class="section level3">
 <h3>MCARt1 implementation</h3>
-<p>UP TO HERE! NOTHING WORKS BELOW — YET!</p>
-<p>To convince the reader of the validity of our efficient Stan implementation we use the <code>expose_stan_functions</code> function from <code>rstan</code> to run the functions directly inside <code>R</code>. In the following code chunks I define both the naive (or standard) approach and our efficient approach for fitting the MCAR in Stan. Our efficient implementation can be found below</p>
+<p>To convince the reader of the validity of our efficient Stan implementation we use the <code>expose_stan_functions</code> function from <code>rstan</code> to run the functions directly inside <code>R</code>. In the following code chunks I define both the naive (or standard) approach and our efficient approach for fitting the MCAR in Stan.</p>
 <pre class="r"><code># Standard implementation
 standard_model &lt;- &quot;
 functions{
 real standardMCAR_lpdf(
-    vector y_vec,
+    vector y_v,
     vector zero,
     matrix Omega_A){
-    return multi_normal_prec_lpdf( y_vec | zero, Omega_A );
+    return multi_normal_prec_lpdf( y_v | zero, Omega_A );
     }
 }
 
@@ -460,39 +460,40 @@ naiveeff_model &lt;- &quot;
 functions{
 /**
 * Log probability density of the multivariate conditional autoregressive (MCAR) model - type1
-* @param x_mat input pars in matrix form (M x K)
+* @param y_mat input pars in matrix form (M x K)
 * @param mu Mean vector
 * @param tau Scale parameter - sigma^(-2)
 * @param rho Spatial dependence parameter
 * @param J matrix that represents spatial neighborhood 
-* @param J_eigenvalues eigenvalues of J
+* @param C_eigenvalues eigenvalues of J
 * @param M number of areas
 * @param K number of factors
 **
 @return Log probability density
 */
 real MCARnet1_lpdf(
-    matrix x_mat,               // input pars in matrix form M x K
-    real rho,                   // spatial smoothing parameter
-    matrix Omega_R,             // Precision matrix for factors
-    matrix Sigma_R,             // Covariance matrix for factors
+    matrix y_mat,                 // input pars in matrix form M x K
+    real rho,                     // spatial smoothing parameter
+    matrix Omega_R,             // Precision matrix for factors (K x K)
+    matrix Sigma_R,             // Covariance matrix for factors (K x K)
     matrix Omega_S,             // Precision matrix for areas (M x M)
-    matrix J,                   // J matrix (M x M)
-    vector J_eigenvalues,       // eigenvalues for J
-    int M,                      // Number of areas
-    int K) {                    // Number of factors
-        vector[M] ldet_J;
+    matrix C,                     // C matrix (M x M)
+    vector C_eigenvalues,   // eigenvalues for C
+    vector D_W,                 // neighbors counts
+    int M,                          // Number of areas
+    int K) {                        // Number of factors
+        vector[M] ldet_C;
         vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
-        matrix[K, M] A_R = Omega_R * x_mat&#39;;
-        matrix[M, K] A_S = Omega_S * x_mat;
+        matrix[K, M] A_R = Omega_R * y_mat&#39;;
+        matrix[M, K] A_S = Omega_S * y_mat;
         real sq_term = sum( A_R .* A_S&#39; );
         for(i in 1:M){
             // equivelant to log(1-rho * lambda[i])
-            ldet_J[i] = log1m( rho * C_eigenvalues[i] ); 
+            ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
         }
         return -0.5 * ( 
         M*K*log( 2 * pi() ) 
-        +  ( 2 * M * sum( log_d_Sigma_R_chol ) - K * sum( ldet_J ) ) + sq_term 
+        -  ( - 2 * M * sum( log_d_Sigma_R_chol ) + K * sum( ldet_C ) + K * sum( log(D_W)) ) + sq_term 
         );
 }
 }
@@ -504,51 +505,52 @@ eff_model &lt;- &quot;
 functions{
 /**
 * Log probability density of the multivariate conditional autoregressive (MCAR) model - type1
-* @param x_mat input pars in matrix form (M x K)
+* @param y_mat input pars in matrix form (M x K)
 * @param rho Spatial dependence parameter
-* @param J matrix that represents spatial neighborhood 
-* @param J_eigenvalues eigenvalues of C
+* @param C matrix that represents spatial neighborhood 
+* @param C_eigenvalues eigenvalues of C
 * @param M number of areas
 * @param K number of factors
 **
 @return Log probability density
 */
 real MCARt1_lpdf(
-    matrix x_mat,               // input pars in matrix form M x K
+    matrix y_mat,               // input pars in matrix form M x K
     real rho,                   // spatial smoothing parameter
     matrix Omega_R,             // Precision matrix for factors
     matrix Sigma_R,             // Covariance matrix for factors
-    vector J_w , 
-    int [] J_v , 
-    int [] J_u , 
-    int [] offD_id_J_w ,        // indexes for off diagonal terms
-    int [] D_id_J_w ,       // indexes for diagonal terms - length M
-    vector J_eigenvalues,       // eigenvalues for C
+    vector C_w , 
+    int [] C_v , 
+    int [] C_u , 
+    int [] offD_id_C_w ,        // indexes for off diagonal terms
+    int [] D_id_C_w ,       // indexes for diagonal terms - length M
+    vector C_eigenvalues,       // eigenvalues for C
+    vector D_W,
     int M,                      // Number of areas
     int K) {                    // Number of factors
-        vector[M] ldet_J;
+        vector[M] ldet_C;
         vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
-        matrix[K, M] A_R = Omega_R * x_mat&#39;;
+        matrix[K, M] A_R = Omega_R * y_mat&#39;;
         // Alternative specification for A_S
-        // Omega_S as sparse matrix multiplied by columns of x_mat 
+        // Omega_S as sparse matrix multiplied by columns of y_mat 
         // using crs_matrix_times_vector
-            vector [ num_elements(J_w) ] ImrhoC;
+            vector [ num_elements(C_w) ] ImrhoC;
             matrix[M, K] A_S;
             // Multiple off-diagonal elements by rho
-            ImrhoC [ offD_id_J_w ] = - rho * J_w[ offD_id_J_w ];
-            // Calculate diagonal elements of ImrhoJ
-            ImrhoC [ D_id_J_w ] = 1 - rho * J_w[ D_id_J_w ];
+            ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
+            // Calculate diagonal elements of ImrhoC
+            ImrhoC [ D_id_C_w ] = C_w[ D_id_C_w ];
             for(k in 1:K){
-                A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, J_v, J_u, x_mat[,k] );
+                A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, y_mat[,k] );
             }
-        real sq_term = sum( A_R .* A_S&#39; );
+        real sq_term = sum( D_W .* diagonal( A_S * A_R ) );
         for(i in 1:M){
-            // equivelant to log(1-rho * lambda[i])
-            ldet_J[i] = log1m( rho * J_eigenvalues[i] ); 
+            // equivelant to log(1-rho * C_eigenvalues[i])
+            ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
         }
-        return -0.5 * ( 
+    return -0.5 * ( 
         M*K*log( 2 * pi() ) 
-        +  ( 2 * M * sum( log_d_Sigma_R_chol ) - K * sum( ldet_J ) ) + sq_term 
+        -  ( - 2 * M * sum( log_d_Sigma_R_chol ) + K * sum( ldet_C ) + K * sum( log(D_W)) ) + sq_term 
         );
 }
 }
@@ -579,10 +581,11 @@ M &lt;- nrow(W)
 n &lt;- M*K
 
 ## Spatial precision matrix ----
-I &lt;- diag(1, nrow = M)
+I &lt;- diag(x=1, nrow = M)
 D &lt;- diag(rowSums(W))
-C &lt;- I - D + W
-Omega_S = I - rho * C
+D_W &lt;- rowSums(W)
+C &lt;- solve(D) %*% W
+Omega_S &lt;- D %*% (I - rho * C)
 # Use our user-made function to get the required
 # sparse elements from C
 # creates a list
@@ -595,6 +598,8 @@ Omega_R &lt;- matrix(c(1.2, 0.7, 1,
 Omega_R &lt;- Omega_R %*% t(Omega_R) # ensure positive definite
 # covariance matrix
 Sigma_R &lt;- solve(Omega_R)
+# diagonal entries of lower cholesky
+Sigma_R_chol_d = diag(t(chol(Sigma_R)))
 
 ## Derive full precision matrix ----
 Omega_A &lt;- kronecker(Omega_S, Omega_R)
@@ -602,27 +607,65 @@ Omega_A &lt;- kronecker(Omega_S, Omega_R)
 # Generate some fake data ----
 set.seed(80)
 # vector version
-y_v &lt;- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
+y &lt;- MASS::mvrnorm(1, rep(0,n), solve(Omega_A))
+y_v &lt;- t(y)
 # matrix version
 y_mat &lt;- matrix(y_v, nrow = M, ncol = K, byrow = T)
 
-## Check log-likelihoods ## ----------------------------------------------------
+# A matrices
+A_S &lt;- as.matrix(Omega_S %*% y_mat)
+A_R &lt;- as.matrix(Omega_R %*% t(y_mat))
+
+## Check log-likelihoods - in R ## ---------------------------------------------
+
+# Standard approach
+mvtnorm::dmvnorm(y_v, rep(0,M*K), solve(Omega_A), log = T)</code></pre>
+<pre><code>## [1] -25.92466</code></pre>
+<pre class="r"><code># Our implementation
+-0.5 * ( M*K*log(2*pi)
+- ( -2*M*sum(log(Sigma_R_chol_d)) 
+   + K * sum(log(1-rho*C_for_stan$C_eigenvalues)) 
+   + K * sum(log(diag(D))) ) 
++ sum(A_R * t(A_S)) )</code></pre>
+<pre><code>## [1] -25.92466</code></pre>
+<pre class="r"><code>## Check log-likelihoods - in Stan ## ------------------------------------------
 
 # Standard or naive
-s=Sys.time(); standardMCAR_lpdf(y_v, rep(0,M*K), Omega_A); Sys.time()-s
-
-# naive efficient
+s=Sys.time(); standardMCAR_lpdf(y_v, rep(0,M*K), as.matrix(Omega_A)); st &lt;- Sys.time()-s</code></pre>
+<pre><code>## [1] -25.92466</code></pre>
+<pre class="r"><code># naive efficient
 s=Sys.time()
-MCARnet1_lpdf(y_mat, rho, Omega_R, Sigma_R, Omega_S, C, C_for_stan$C_eigenvalues, M, K)
-Sys.time()-s
+MCARnet1_lpdf(y_mat, rho, 
+              as.matrix(Omega_R), 
+              as.matrix(Sigma_R), 
+              as.matrix(Omega_S), 
+              as.matrix(C), C_for_stan$C_eigenvalues, D_W, M, K)</code></pre>
+<pre><code>## [1] -25.92466</code></pre>
+<pre class="r"><code>ne &lt;- Sys.time()-s
 
 # Efficient (or fast)
 s=Sys.time() 
-MCARt1_lpdf(y_mat, rho, Omega_R, Sigma_R, 
-            C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
-            C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
-            C_for_stan$C_eigenvalues, M, K)
-Sys.time()-s</code></pre>
+MCARt1_lpdf(y_mat, rho, 
+            as.matrix(Omega_R), 
+            as.matrix(Sigma_R), 
+            C_for_stan$C_w, 
+            C_for_stan$C_v, 
+            C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, 
+            C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, D_W, M, K)</code></pre>
+<pre><code>## [1] -25.92466</code></pre>
+<pre class="r"><code>eff &lt;- Sys.time()-s
+
+## Time check ## ---------------------------------------------------------------
+
+data.frame(method = c(&quot;Standard&quot;, &quot;Naive efficient&quot;, &quot;Efficient&quot;),
+           time = c(st, ne, eff)) %&gt;% 
+  mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
+<pre><code>##            method       time
+## 1        Standard 4.63506198
+## 2 Naive efficient 0.02315903
+## 3       Efficient 0.00680685</code></pre>
 <p>Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With <code>M=1000</code> and <code>K=3</code> we find that the fast implementation is around 150 times faster.</p>
 </div>
 </div>
@@ -786,7 +829,7 @@ s=Sys.time()
 A_S &lt;- Omega_S %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
 psych::tr(A_S %*% A_R); km2 &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
-<p>Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took 0.21 seconds, while ours took 0.05 seconds. Unlike the standard approach which requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications, our approach only requires <span class="math inline">\(MK(M + 2K)\)</span>.</p>
+<p>Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took 0.19 seconds, while ours took 0.02 seconds. Unlike the standard approach which requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications, our approach only requires <span class="math inline">\(MK(M + 2K)\)</span>.</p>
 <p>An alternative to deriving the trace of the matrix multiplication of <span class="math inline">\(\mathbf{A}^S\)</span> and <span class="math inline">\(\mathbf{A}^R\)</span> is to sum all the elements of the componentwise multiplication of <span class="math inline">\(\mathbf{A}^R\)</span> and <span class="math inline">\(\left(  \mathbf{A}^S  \right)^T\)</span>, which only involves <span class="math inline">\(MK(M + K + 1)\)</span> scalar multiplications.</p>
 <pre class="r"><code># Standard squared term
 (t(y) %*% kronecker(Omega_S, Omega_R) %*% y) # v1</code></pre>
@@ -802,7 +845,7 @@ s=Sys.time()
 A_S &lt;- Omega_S %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
 sum(A_R * t(A_S)); cm &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
-<p>As expected, we get the same value but a little faster! The trace method took 0.01 seconds, while the componentwise method only took 0.01 seconds.</p>
+<p>As expected, we get the same value but a little faster! The trace method took 0.02 seconds, while the componentwise method only took 0.01 seconds.</p>
 </div>
 <div id="mcart1-implementation-1" class="section level3">
 <h3>MCARt1 implementation</h3>
@@ -903,7 +946,7 @@ real MCARt1_lpdf(
             matrix[M, K] A_S;
             // Multiple off-diagonal elements by rho
             ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
-            // Calculate diagonal elements of ImrhoJ
+            // Calculate diagonal elements of ImrhoC
             ImrhoC [ D_id_C_w ] = 1 - rho * C_w[ D_id_C_w ];
             for(k in 1:K){
                 A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x_mat[,k] );
