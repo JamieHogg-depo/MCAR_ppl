@@ -173,7 +173,7 @@ $$
 
 To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$.
 
-## The proper CAR prior
+# The proper CAR prior
 
 The spatial matrix, $\mathbf{\Omega}^S$, is 
 
@@ -186,7 +186,7 @@ $$
 $$
 where $\mathbf{W} \in \left[ 0,1 \right]^{M \times M}$ is a binary neighborhood matrix, $\mathbf{D}$ is a diagonal matrix with the number of neighbors of each area, and $\rho \in (0,1)$ is the common spatial smoothing parameter. The spatial matrix will be very sparse; a property we'll leverage later.
 
-### Determinant
+## Determinant
 
 Using well known algebra rules one can show that,
 
@@ -292,7 +292,7 @@ term1 + term2 + term3
 ```
 
 
-### Squared term
+## Squared term
 
 It is important to derive an efficient manner to calculate the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$. The Kronecker product, and left and right multiplications involved in this component requires $3M^2K^2$ scalar multiplications.
 
@@ -424,7 +424,7 @@ data.frame(method = c("Standard", "Trace", "Componentwise", "Partition"),
 
 Success! By using the matrix normal setup, we recover the same squared error term, but much faster. 
 
-### MCARt1 implementation
+## Stan implementations
 
 To convince the reader of the validity of our efficient Stan implementation we use the `expose_stan_functions` function from `rstan` to run the functions directly inside `R`. In the following code chunks I define both the naive (or standard) approach and our efficient approach for fitting the MCAR in Stan. 
 
@@ -562,7 +562,7 @@ All that is left to do is generate some fake data and ensure that all three func
 
 ```{r eval=TRUE}
 # number of areas
-M <- 1000
+M <- 1500
 # number of factors
 K <- 3
 # set the spatial smoothing parameter
@@ -598,11 +598,12 @@ Sigma_R_chol_d = diag(t(chol(Sigma_R)))
 
 ## Derive full precision matrix ----
 Omega_A <- kronecker(Omega_S, Omega_R)
+Sigma_A <- solve(Omega_A)
 
 # Generate some fake data ----
 set.seed(80)
 # vector version
-y <- MASS::mvrnorm(1, rep(0,n), solve(Omega_A))
+y <- MASS::mvrnorm(1, rep(0,n), Sigma_A)
 y_v <- t(y)
 # matrix version
 y_mat <- matrix(y_v, nrow = M, ncol = K, byrow = T)
@@ -614,7 +615,7 @@ A_R <- as.matrix(Omega_R %*% t(y_mat))
 ## Check log-likelihoods - in R ## ---------------------------------------------
 
 # Standard approach
-mvtnorm::dmvnorm(y_v, rep(0,M*K), solve(Omega_A), log = T)
+mvtnorm::dmvnorm(y_v, rep(0,M*K), Sigma_A, log = T)
 
 # Our implementation
 -0.5 * ( M*K*log(2*pi)
@@ -660,67 +661,7 @@ data.frame(method = c("Standard", "Naive efficient", "Efficient"),
 
 Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With `M=1000` and `K=3` we find that the fast implementation is around 150 times faster. 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## Leroux prior
+# Leroux prior
 
 The Leroux model proposed by [@RN366] was extended to the multivariate setting by [@RN546]. Note that a similar setup was used by [@RN574]. Under the Leroux setup, the spatial matrix, $\mathbf{\Omega}^S$, is 
 
@@ -739,7 +680,7 @@ $$
 
 To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$.
 
-### Determinant
+## Determinant
 
 Using well known algebra rules one can show that,
 
@@ -804,7 +745,7 @@ determinant(Prec, logarithm = T)$modulus
 
 Conveniently, standard practice is to place a prior on the lower Cholesky of the covariance matrix rather than the precision matrix directly. Thus, this identity allows us to derive the correct determinant without deriving the precision first. 
 
-### Squared term
+## Squared term
 
 It is important to derive an efficient manner to calculate the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$. The Kronecker product, and left and right multiplications involved in this component requires $3M^2K^2$ scalar multiplications.
 
@@ -924,7 +865,7 @@ sum(A_R * t(A_S)); cm <- Sys.time()-s
 
 As expected, we get the same value but a little faster! The trace method took `r round(as.numeric(tm, units = "secs"), 2)` seconds, while the componentwise method only took `r round(as.numeric(cm, units = "secs"), 2)` seconds. 
 
-### MCARt1 implementation
+## Stan implementations
 
 To convince the reader of the validity of our efficient Stan implementation we use the `expose_stan_functions` function from `rstan` to run the functions directly inside `R`. In the following code chunks I define both the naive (or standard) approach and our efficient approach for fitting the MCAR in Stan. 
 Our efficient implementation can be found below
@@ -1048,7 +989,7 @@ real MCARt1_lpdf(
 
 Now that we have declared the two functions, we compile and expose them to the `R` environment. 
 
-```{r eval=FALSE}
+```{r eval=TRUE}
 comp_standard <- stan_model(model_code = standard_model)
 expose_stan_functions(comp_standard)
 
@@ -1061,9 +1002,9 @@ expose_stan_functions(comp_eff)
 
 All that is left to do is generate some fake data and ensure that all three functions give identical log-likelihoods like we expect. 
 
-```{r eval=FALSE}
+```{r eval=TRUE}
 # number of areas
-M <- 1000
+M <- 1500
 # number of factors
 K <- 3
 # set the spatial smoothing parameter
