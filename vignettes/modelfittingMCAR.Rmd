@@ -123,34 +123,11 @@ prep4MCAR <- function(W, type = "pcar"){
   }
   
 }
-
-#' @param C C matrix 
-prep4MCAR2 <- function(C){
-  
-  # Eigenvalues of C
-  C_eigenvalues <- eigen(C)$values
-  
-  # get the CRS representation of C
-  crs <- rstan::extract_sparse_parts(C)
-  nC_w <- length(crs$w)
-  
-  # prepare output list
-  return(
-    list(C_eigenvalues = C_eigenvalues, 
-         nC_w = nC_w,
-         C_w = crs$w,
-         C_v = crs$v,
-         C_u = crs$u,
-         D_id_C_w = which(crs$w != 1),
-         offD_id_C_w = which(crs$w == 1))
-  )
-}
-
 ```
 
 # Introduction
 
-Multivariate conditional autoregressive (MCAR) priors are one way of simultaneously accomodating spatial structure and dependence between several factors [@RN610].
+Multivariate conditional autoregressive (MCAR) priors are one way of simultaneously accommodating spatial structure and dependence between several factors [@RN610].
 
 # Simulate data
 
@@ -160,9 +137,9 @@ Before fitting our efficient Stan implementations in Stan we'll generate and vis
 # number of areas
 M <- 2000
 # number of factors
-K <- 3
+K <- 5
 # set the spatial smoothing parameter
-rho <- 0.98
+rho <- 0.90
 
 # use our user-made function to get fully connected grid
 spat_obj <- getGRID(M)
@@ -184,9 +161,11 @@ Omega_S <- D %*% (I - rho * C)
 C_for_stan <- prep4MCAR(W)
 
 ## Between factors precision matrix ----
-Omega_R <- matrix(c(1.2, 0.7, 1,
-                    0.7, 1,   -1,
-                    1,   -1,   2), byrow = T, ncol = K)
+Omega_R <- matrix(c(1.2,  0.7,  1.0,   0.2, 0.3,
+                    0.7,  1.0, -1.0,   0.2, 0.4,
+                    1.0, -1.0,  2.0,   0.2, 0.5,
+                    0.2,  0.2,  0.2,   1.0, 0.7,
+                    0.3,  0.4,  0.5,   0.7, 1.0), byrow = T, ncol = K)
 Omega_R <- Omega_R %*% t(Omega_R) # ensure positive definite
 # covariance matrix
 Sigma_R <- solve(Omega_R)
@@ -197,12 +176,12 @@ Cor_R <- cov2cor(Sigma_R)
 
 ## Derive full precision matrix ----
 Omega_A <- kronecker(Omega_S, Omega_R)
-Sigma_A <- solve(Omega_A)
+m_s <- Sys.time(); Sigma_A <- solve(Omega_A); Sys.time()-m_s
 
 # Generate multivariate outcome ----
 set.seed(80)
 # vector version
-theta <- MASS::mvrnorm(1, rep(0,n), Sigma_A)
+m_s <- Sys.time(); theta <- MASS::mvrnorm(1, rep(0,n), Sigma_A); Sys.time()-m_s
 theta_v <- t(theta )
 # matrix version
 theta_mat <- matrix(theta_v, nrow = M, ncol = K, byrow = T)
@@ -210,16 +189,45 @@ theta_mat <- matrix(theta_v, nrow = M, ncol = K, byrow = T)
 
 Now we visualize the three factors in separate grids. 
 
-```{r}
+```{r echo=F}
+# this
+y1 <- theta_mat[,1] %*% t(W/rowSums(W))
+y2 <- theta_mat[,2] %*% t(W/rowSums(W))
+y3 <- theta_mat[,3] %*% t(W/rowSums(W))
+y4 <- theta_mat[,4] %*% t(W/rowSums(W))
+y5 <- theta_mat[,5] %*% t(W/rowSums(W))
+
+# plots
 (ggplot(spat_obj$sf)+
   geom_sf(aes(fill = theta_mat[,1]))+
-   scale_fill_viridis_b())+
+   scale_fill_viridis_b(n.breaks = 8))+
 (ggplot(spat_obj$sf)+
   geom_sf(aes(fill = theta_mat[,2]))+
-   scale_fill_viridis_b())+
+   scale_fill_viridis_b(n.breaks = 8))+
 (ggplot(spat_obj$sf)+
   geom_sf(aes(fill = theta_mat[,3]))+
-   scale_fill_viridis_b())
+   scale_fill_viridis_b(n.breaks = 8))+
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = theta_mat[,4]))+
+   scale_fill_viridis_b(n.breaks = 8))+
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = theta_mat[,5]))+
+   scale_fill_viridis_b(n.breaks = 8))+
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = y1[1,]))+
+   scale_fill_viridis_b(n.breaks = 8))+
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = y2[1,]))+
+   scale_fill_viridis_b(n.breaks = 8))+
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = y3[1,]))+
+   scale_fill_viridis_b(n.breaks = 8))+
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = y4[1,]))+
+   scale_fill_viridis_b(n.breaks = 8))+
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = y5[1,]))+
+   scale_fill_viridis_b(n.breaks = 8))
 ```
 
 ## Model fitting
@@ -240,11 +248,12 @@ m_s <- Sys.time()
 fit_e <- sampling(object = comp_e, 
                   data = data, 
                   chains = 2, iter = 2000, warmup = 1000,
-                  cores = 2)
+                  cores = 2, refresh = 0)
 (rtmins_e <- as.numeric(Sys.time() - m_s, units = "mins"))
 
 # takes 20 mins for M=1000, K = 3 - without dot product
 # under 2 minute for M=1000, K = 3 - with dot product
+# under 4 minute for M=2000, K = 3 - with dot product
 ```
 
 Given we generated these data, we can assess how well our model estimates the known parameters. 

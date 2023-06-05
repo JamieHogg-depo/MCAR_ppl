@@ -539,14 +539,15 @@ real MCARt1_lpdf(
 				A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, y_mat[,k] );
 			}
 		for(i in 1:M){
-			diag_term[i] = D_W[i] * dot_prod( A_S[i,], A_R[,i]);
+			diag_term[i] = D_W[i] * dot_product( A_S[i,], A_R[,i]);
 		}  
     real sq_term = sum( diag_term );
+    ldet_C = log1m( rho * C_eigenvalues );
 		// real sq_term = sum( D_W .* diagonal( A_S * A_R ) );
-		for(i in 1:M){
+		//for(i in 1:M){
 			// equivelant to log(1-rho * C_eigenvalues[i])
-			ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
-		}
+			//ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
+		//}
     return -0.5 * ( 
 		M*K*log( 2 * pi() ) 
 		-  ( - 2 * M * sum( log_d_Sigma_R_chol ) + K * sum( ldet_C ) + K * sum( log(D_W)) ) + sq_term 
@@ -970,7 +971,6 @@ real MCARt1_lpdf(
 	int M, 						// Number of areas
 	int K) { 					// Number of factors
 		vector[M] ldet_C;
-		vector[M] diag_term;
 		vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
 		matrix[K, M] A_R = Omega_R * x_mat';
 		// Alternative specification for A_S
@@ -985,12 +985,8 @@ real MCARt1_lpdf(
 			for(k in 1:K){
 				A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x_mat[,k] );
 			}
-		for(i in 1:M){
-			diag_term[i] = D_W[i] * dot_product( A_S[i,], A_R[,i]);
-		}  
-    real sq_term = sum( diag_term );
 		ldet_C = log1m( rho * C_eigenvalues );
-		//real sq_term = sum( A_R .* A_S' );
+		real sq_term = sum( A_R .* A_S' );
 		//for(i in 1:M){
 			// equivelant to log(1-rho * lambda[i])
 			//ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 

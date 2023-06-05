@@ -383,7 +383,7 @@ Continuing with this setup, the squared term of the matrix normal distribution i
 \\
 (\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y}) &amp;= \sum \left(  \text{diag}\left( \mathbf{D} \right) \times \text{diag}\left(  \mathbf{A}^{*S} \mathbf{A}^R  \right)  \right),
 \end{align}
-\]</span> where <span class="math inline">\(\times\)</span> is componentwise multiplication of the two vectors. The benefit to this approach is that <span class="math inline">\(\mathbf{A}^{*S}\)</span> can be constructed using sparse functions in Stan.</p>
+\]</span> where <span class="math inline">\(\times\)</span> is componentwise multiplication of the two vectors. The benefit to this approach is that <span class="math inline">\(\mathbf{A}^{*S}\)</span> can be constructed using sparse functions in Stan. Furthermore, given we only need the diagonal elements of <span class="math inline">\(\mathbf{A}^{*S} \mathbf{A}^R\)</span>, we can use the dot product of the rows of <span class="math inline">\(\mathbf{A}^R\)</span> and columns of <span class="math inline">\(\mathbf{A}^R\)</span>. This only involves <span class="math inline">\(MK\)</span> operations, while <span class="math inline">\(\mathbf{A}^{*S} \mathbf{A}^R\)</span> requires <span class="math inline">\(M^2K\)</span>.</p>
 <p>To grapple with and assess all these implementations, consider the following example with simulated data.</p>
 <pre class="r"><code>M &lt;- 1000; K &lt;- 3
 W &lt;- getGRID(M)$W
@@ -447,16 +447,25 @@ s=Sys.time()
 A_S &lt;- (I - rho * C) %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
 sum(diag(D)*diag(A_S %*% A_R)); km3 &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
+<pre class="r"><code># partition approach using dot product
+s=Sys.time()
+ddd &lt;- as.numeric(NA, M)
+for(i in 1:M){
+  ddd[i]&lt;- diag(D)[i] * (A_S[i,] %*% A_R[,i])
+}
+sum(ddd); km4 &lt;- Sys.time()-s</code></pre>
+<pre><code>## [1] 2995.998</code></pre>
 <pre class="r"><code>## Time check ------------------------------------------------------------------
 
-data.frame(method = c(&quot;Standard&quot;, &quot;Trace&quot;, &quot;Componentwise&quot;, &quot;Partition&quot;),
-           time = c(st, km2, cm, km3)) %&gt;% 
+data.frame(method = c(&quot;Standard&quot;, &quot;Trace&quot;, &quot;Componentwise&quot;, &quot;Partition&quot;, &quot;Partition_dp&quot;),
+           time = c(st, km2, cm, km3, km4)) %&gt;% 
   mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
 <pre><code>##          method        time
-## 1      Standard 0.195892096
-## 2         Trace 0.012035847
-## 3 Componentwise 0.005964994
-## 4     Partition 0.036998034</code></pre>
+## 1      Standard 0.181579113
+## 2         Trace 0.010303974
+## 3 Componentwise 0.006968975
+## 4     Partition 0.036331892
+## 5  Partition_dp 0.023571014</code></pre>
 <p>Success! By using the matrix normal setup, we recover the same squared error term, but much faster.</p>
 </div>
 <div id="stan-implementations" class="section level2">
@@ -549,6 +558,7 @@ real MCARt1_lpdf(
     int M,                      // Number of areas
     int K) {                    // Number of factors
         vector[M] ldet_C;
+        vector[M] diag_term;
         vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
         matrix[K, M] A_R = Omega_R * y_mat&#39;;
         // Alternative specification for A_S
@@ -563,11 +573,16 @@ real MCARt1_lpdf(
             for(k in 1:K){
                 A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, y_mat[,k] );
             }
-        real sq_term = sum( D_W .* diagonal( A_S * A_R ) );
         for(i in 1:M){
+            diag_term[i] = D_W[i] * dot_product( A_S[i,], A_R[,i]);
+        }  
+    real sq_term = sum( diag_term );
+    ldet_C = log1m( rho * C_eigenvalues );
+        // real sq_term = sum( D_W .* diagonal( A_S * A_R ) );
+        //for(i in 1:M){
             // equivelant to log(1-rho * C_eigenvalues[i])
-            ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
-        }
+            //ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
+        //}
     return -0.5 * ( 
         M*K*log( 2 * pi() ) 
         -  ( - 2 * M * sum( log_d_Sigma_R_chol ) + K * sum( ldet_C ) + K * sum( log(D_W)) ) + sq_term 
@@ -683,10 +698,10 @@ MCARt1_lpdf(y_mat, rho,
 data.frame(method = c(&quot;Standard&quot;, &quot;Naive efficient&quot;, &quot;Efficient&quot;),
            time = c(st, ne, eff)) %&gt;% 
   mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
-<pre><code>##            method        time
-## 1        Standard 9.332988977
-## 2 Naive efficient 0.022093058
-## 3       Efficient 0.007158041</code></pre>
+<pre><code>##            method         time
+## 1        Standard 13.848710060
+## 2 Naive efficient  0.031670809
+## 3       Efficient  0.006191015</code></pre>
 <p>Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With <code>M=1500</code> and <code>K=3</code> we find that the fast implementation is around 150 times faster.</p>
 </div>
 </div>
@@ -850,7 +865,7 @@ s=Sys.time()
 A_S &lt;- Omega_S %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
 psych::tr(A_S %*% A_R); km2 &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
-<p>Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took 0.18 seconds, while ours took 0.01 seconds. Unlike the standard approach which requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications, our approach only requires <span class="math inline">\(MK(M + 2K)\)</span>.</p>
+<p>Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took 0.19 seconds, while ours took 0.01 seconds. Unlike the standard approach which requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications, our approach only requires <span class="math inline">\(MK(M + 2K)\)</span>.</p>
 <p>An alternative to deriving the trace of the matrix multiplication of <span class="math inline">\(\mathbf{A}^S\)</span> and <span class="math inline">\(\mathbf{A}^R\)</span> is to sum all the elements of the componentwise multiplication of <span class="math inline">\(\mathbf{A}^R\)</span> and <span class="math inline">\(\left(  \mathbf{A}^S  \right)^T\)</span>, which only involves <span class="math inline">\(MK(M + K + 1)\)</span> scalar multiplications.</p>
 <pre class="r"><code># Standard squared term
 (t(y) %*% kronecker(Omega_S, Omega_R) %*% y) # v1</code></pre>
@@ -972,11 +987,12 @@ real MCARt1_lpdf(
             for(k in 1:K){
                 A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x_mat[,k] );
             }
+        ldet_C = log1m( rho * C_eigenvalues );
         real sq_term = sum( A_R .* A_S&#39; );
-        for(i in 1:M){
+        //for(i in 1:M){
             // equivelant to log(1-rho * lambda[i])
-            ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
-        }
+            //ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
+        //}
         return -0.5 * ( 
         M*K*log( 2 * pi() ) 
         +  ( 2 * M * sum( log_d_Sigma_R_chol ) - K * sum( ldet_C ) ) + sq_term 
@@ -1062,10 +1078,10 @@ MCARt1_lpdf(y_mat, rho, Omega_R, Sigma_R,
 data.frame(method = c(&quot;Standard&quot;, &quot;Naive efficient&quot;, &quot;Efficient&quot;),
            time = c(st, ne, eff)) %&gt;% 
   mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
-<pre><code>##            method        time
-## 1        Standard 9.084177971
-## 2 Naive efficient 0.022956133
-## 3       Efficient 0.003726006</code></pre>
+<pre><code>##            method         time
+## 1        Standard 12.227417946
+## 2 Naive efficient  0.039725780
+## 3       Efficient  0.009010792</code></pre>
 <p>Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With <code>M=1500</code> and <code>K=3</code> we find that the fast implementation is around 150 times faster.</p>
 </div>
 </div>
