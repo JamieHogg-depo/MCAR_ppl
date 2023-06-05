@@ -349,7 +349,7 @@ $$
 (\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y}) &= \sum \lb{ \jdist{diag}{\mathbf{D}} \times \jdist{diag}{ \mathbf{A}^{*S} \mathbf{A}^R } },
 \end{align}
 $$
-where $\times$ is componentwise multiplication of the two vectors. The benefit to this approach is that $\mathbf{A}^{*S}$ can be constructed using sparse functions in Stan.  
+where $\times$ is componentwise multiplication of the two vectors. The benefit to this approach is that $\mathbf{A}^{*S}$ can be constructed using sparse functions in Stan. Furthermore, given we only need the diagonal elements of $\mathbf{A}^{*S} \mathbf{A}^R$, we can use the dot product of the rows of $\mathbf{A}^R$ and columns of $\mathbf{A}^R$. This only involves $MK$ operations, while $\mathbf{A}^{*S} \mathbf{A}^R$ requires $M^2K$. 
 
 To grapple with and assess all these implementations, consider the following example with simulated data. 
 
@@ -414,12 +414,19 @@ s=Sys.time()
 A_S <- (I - rho * C) %*% Y2; A_R <- Omega_R %*% t(Y2)
 sum(diag(D)*diag(A_S %*% A_R)); km3 <- Sys.time()-s
 
+# partition approach using dot product
+s=Sys.time()
+ddd <- as.numeric(NA, M)
+for(i in 1:M){
+  ddd[i]<- diag(D)[i] * (A_S[i,] %*% A_R[,i])
+}
+sum(ddd); km4 <- Sys.time()-s
+
 ## Time check ------------------------------------------------------------------
 
-data.frame(method = c("Standard", "Trace", "Componentwise", "Partition"),
-           time = c(st, km2, cm, km3)) %>% 
+data.frame(method = c("Standard", "Trace", "Componentwise", "Partition", "Partition_dp"),
+           time = c(st, km2, cm, km3, km4)) %>% 
   mutate(time = as.numeric(time, units = "secs"))
-
 ```
 
 Success! By using the matrix normal setup, we recover the same squared error term, but much faster. 
@@ -516,6 +523,7 @@ real MCARt1_lpdf(
 	int M, 						// Number of areas
 	int K) { 					// Number of factors
 		vector[M] ldet_C;
+		vector[M] diag_term;
 		vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
 		matrix[K, M] A_R = Omega_R * y_mat';
 		// Alternative specification for A_S
@@ -530,7 +538,11 @@ real MCARt1_lpdf(
 			for(k in 1:K){
 				A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, y_mat[,k] );
 			}
-		real sq_term = sum( D_W .* diagonal( A_S * A_R ) );
+		for(i in 1:M){
+			diag_term[i] = D_W[i] * dot_prod( A_S[i,], A_R[,i]);
+		}  
+    real sq_term = sum( diag_term );
+		// real sq_term = sum( D_W .* diagonal( A_S * A_R ) );
 		for(i in 1:M){
 			// equivelant to log(1-rho * C_eigenvalues[i])
 			ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
@@ -584,7 +596,7 @@ Omega_S <- D %*% (I - rho * C)
 # Use our user-made function to get the required
 # sparse elements from C
 # creates a list
-C_for_stan <- prep4MCAR(W)
+C_for_stan <- prep4MCAR(W, type = "pcar")
 
 ## Between factors precision matrix ----
 Omega_R <- matrix(c(1.2, 0.7, 1,
@@ -659,7 +671,7 @@ data.frame(method = c("Standard", "Naive efficient", "Efficient"),
 
 ```
 
-Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With `M=1000` and `K=3` we find that the fast implementation is around 150 times faster. 
+Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With `M=1500` and `K=3` we find that the fast implementation is around 150 times faster. 
 
 # Leroux prior
 
@@ -958,6 +970,7 @@ real MCARt1_lpdf(
 	int M, 						// Number of areas
 	int K) { 					// Number of factors
 		vector[M] ldet_C;
+		vector[M] diag_term;
 		vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
 		matrix[K, M] A_R = Omega_R * x_mat';
 		// Alternative specification for A_S
@@ -972,11 +985,16 @@ real MCARt1_lpdf(
 			for(k in 1:K){
 				A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x_mat[,k] );
 			}
-		real sq_term = sum( A_R .* A_S' );
 		for(i in 1:M){
+			diag_term[i] = D_W[i] * dot_product( A_S[i,], A_R[,i]);
+		}  
+    real sq_term = sum( diag_term );
+		ldet_C = log1m( rho * C_eigenvalues );
+		//real sq_term = sum( A_R .* A_S' );
+		//for(i in 1:M){
 			// equivelant to log(1-rho * lambda[i])
-			ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
-		}
+			//ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
+		//}
 		return -0.5 * ( 
 		M*K*log( 2 * pi() ) 
 		+  ( 2 * M * sum( log_d_Sigma_R_chol ) - K * sum( ldet_C ) ) + sq_term 
@@ -1025,7 +1043,7 @@ Omega_S = I - rho * C
 # Use our user-made function to get the required
 # sparse elements from C
 # creates a list
-C_for_stan <- prep4MCAR(W)
+C_for_stan <- prep4MCAR(W, type = "lcar")
 
 ## Between factors precision matrix ----
 Omega_R <- matrix(c(1.2, 0.7, 1,
@@ -1048,12 +1066,12 @@ y_mat <- matrix(y_v, nrow = M, ncol = K, byrow = T)
 ## Check log-likelihoods ## ----------------------------------------------------
 
 # Standard or naive
-s=Sys.time(); standardMCAR_lpdf(y_v, rep(0,M*K), Omega_A); Sys.time()-s
+s=Sys.time(); standardMCAR_lpdf(y_v, rep(0,M*K), Omega_A); st = Sys.time()-s
 
 # naive efficient
 s=Sys.time()
 MCARnet1_lpdf(y_mat, rho, Omega_R, Sigma_R, Omega_S, C, C_for_stan$C_eigenvalues, M, K)
-Sys.time()-s
+ne = Sys.time()-s
 
 # Efficient (or fast)
 s=Sys.time() 
@@ -1061,10 +1079,17 @@ MCARt1_lpdf(y_mat, rho, Omega_R, Sigma_R,
             C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
             C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
             C_for_stan$C_eigenvalues, M, K)
-Sys.time()-s
+eff = Sys.time()-s
+
+## Time check ## ---------------------------------------------------------------
+
+data.frame(method = c("Standard", "Naive efficient", "Efficient"),
+           time = c(st, ne, eff)) %>% 
+  mutate(time = as.numeric(time, units = "secs"))
+
 ```
 
-Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With `M=1000` and `K=3` we find that the fast implementation is around 150 times faster.  
+Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With `M=1500` and `K=3` we find that the fast implementation is around 150 times faster.  
 
 # References
 

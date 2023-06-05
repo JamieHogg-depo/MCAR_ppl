@@ -1,0 +1,269 @@
+---
+title: "Efficient Multivariate Conditional Autoregressive (MCAR) prior in Stan"
+author:
+  name: "By James Hogg - 2023"
+output: 
+  html_document:
+    toc: true
+bibliography: bib.bib
+csl: research-in-number-theory.csl
+editor_options: 
+  chunk_output_type: console
+---
+
+\newcommand{\lb}[1]{\left( #1 \right)}
+\newcommand{\jdist}[2]{\text{#1}\left( #2 \right)}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Load packages ## ------------------------------------------------------------
+
+library(tidyverse)
+library(sf)
+library(spdep)
+library(mvtnorm)
+library(rstan)
+library(patchwork)
+rm(list = ls())
+
+## Functions ## ----------------------------------------------------------------
+
+#' @title getGRID
+#' @description creates a sf object that is a grid of specified size
+#' @param M target number of areas
+#' @returns A list of two objects: sf is a data.frame/sf object with the geometry for the grid, W is the binary weight matrix based on queen contiguity
+
+getGRID <- function(M){
+  
+  out <- list()
+  
+  # provides the height and length dimensions for the grid that are as close to the specified M as possible
+  dims <- c(floor(sqrt(M)), floor(M/floor(sqrt(M))))
+  
+  df <- data.frame(lon = c(0, dims[1]), 
+                   lat = c(0, dims[2])) %>% 
+    st_as_sf(coords = c("lon", "lat")) %>% 
+    st_bbox() %>% 
+    st_as_sfc()
+  
+  out$sf <- sf::st_make_grid(df, square = T, cellsize = c(1, 1)) %>% 
+    sf::st_sf() %>% 
+    dplyr::mutate(id = row_number())
+  
+  out$W <- nb2mat(poly2nb(out$sf, queen = T), style="B") #binary
+  #message(paste0("Created an sf object with ", prod(dims), " rows"))
+  return(out)
+}
+
+#' @param input stan summary (summary(fit)$summary)
+getSubsetSummary <- function(input, regex){
+  as.data.frame(input) %>% 
+    rownames_to_column("parameter") %>% 
+    relocate(parameter) %>% 
+    filter(str_detect(parameter, regex))
+}
+
+#' @param W binary contiguity matrix (must be complete)
+#' @param type (defaults to 'pcar') but also takes 'lcar'
+prep4MCAR <- function(W, type = "pcar"){
+  if(type == "pcar"){
+    
+    # create sparse matrices
+    W <- Matrix::Matrix(W, sparse = TRUE)
+    I <- Matrix::Diagonal(nrow(W))
+    D <- Matrix::Diagonal( x = Matrix::rowSums(W) )
+    C <- solve(D) %*% W
+    
+    # Eigenvalues of C
+    C_eigenvalues <- eigen(C)$values
+    
+    # get the CRS representation of C
+    crs <- rstan::extract_sparse_parts(I+C)
+    nC_w <- length(crs$w)
+    
+    # prepare output list
+    return(
+      list(C_eigenvalues = C_eigenvalues, 
+           nC_w = nC_w,
+           C_w = crs$w,
+           C_v = crs$v,
+           C_u = crs$u,
+           D_id_C_w = which(crs$w == 1),
+           offD_id_C_w = which(crs$w != 1))
+  )
+  
+  }
+  if(type == "lcar"){
+    
+    # create sparse matrices
+    W <- Matrix::Matrix(W, sparse = TRUE)
+    D <- Matrix::Diagonal( x = Matrix::rowSums(W) )
+    I <- Matrix::Diagonal(nrow(W))
+    C <- I - D + W
+    
+    # Eigenvalues of C
+    C_eigenvalues <- eigen(C)$values
+    
+    # get the CRS representation of C
+    crs <- rstan::extract_sparse_parts(C)
+    nC_w <- length(crs$w)
+    
+    # prepare output list
+    return(
+      list(C_eigenvalues = C_eigenvalues, 
+           nC_w = nC_w,
+           C_w = crs$w,
+           C_v = crs$v,
+           C_u = crs$u,
+           D_id_C_w = which(crs$w != 1),
+           offD_id_C_w = which(crs$w == 1))
+  )
+    
+  }
+  
+}
+
+#' @param C C matrix 
+prep4MCAR2 <- function(C){
+  
+  # Eigenvalues of C
+  C_eigenvalues <- eigen(C)$values
+  
+  # get the CRS representation of C
+  crs <- rstan::extract_sparse_parts(C)
+  nC_w <- length(crs$w)
+  
+  # prepare output list
+  return(
+    list(C_eigenvalues = C_eigenvalues, 
+         nC_w = nC_w,
+         C_w = crs$w,
+         C_v = crs$v,
+         C_u = crs$u,
+         D_id_C_w = which(crs$w != 1),
+         offD_id_C_w = which(crs$w == 1))
+  )
+}
+
+```
+
+# Introduction
+
+Multivariate conditional autoregressive (MCAR) priors are one way of simultaneously accomodating spatial structure and dependence between several factors [@RN610].
+
+# Simulate data
+
+Before fitting our efficient Stan implementations in Stan we'll generate and visualize some multivariate spatial data using a normal likelihood. 
+
+```{r eval=TRUE}
+# number of areas
+M <- 2000
+# number of factors
+K <- 3
+# set the spatial smoothing parameter
+rho <- 0.98
+
+# use our user-made function to get fully connected grid
+spat_obj <- getGRID(M)
+W <- spat_obj$W
+M <- nrow(W)
+
+# size of multivariate normal
+n <- M*K
+
+## Spatial precision matrix ----
+I <- diag(x=1, nrow = M)
+D <- diag(rowSums(W))
+D_W <- rowSums(W)
+C <- diag(1/rowSums(W)) %*% W
+Omega_S <- D %*% (I - rho * C)
+# Use our user-made function to get the required
+# sparse elements from C
+# creates a list
+C_for_stan <- prep4MCAR(W)
+
+## Between factors precision matrix ----
+Omega_R <- matrix(c(1.2, 0.7, 1,
+                    0.7, 1,   -1,
+                    1,   -1,   2), byrow = T, ncol = K)
+Omega_R <- Omega_R %*% t(Omega_R) # ensure positive definite
+# covariance matrix
+Sigma_R <- solve(Omega_R)
+# diagonal entries of lower cholesky
+Sigma_R_chol_d = diag(t(chol(Sigma_R)))
+# Correlation matrix
+Cor_R <- cov2cor(Sigma_R)
+
+## Derive full precision matrix ----
+Omega_A <- kronecker(Omega_S, Omega_R)
+Sigma_A <- solve(Omega_A)
+
+# Generate multivariate outcome ----
+set.seed(80)
+# vector version
+theta <- MASS::mvrnorm(1, rep(0,n), Sigma_A)
+theta_v <- t(theta )
+# matrix version
+theta_mat <- matrix(theta_v, nrow = M, ncol = K, byrow = T)
+```
+
+Now we visualize the three factors in separate grids. 
+
+```{r}
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = theta_mat[,1]))+
+   scale_fill_viridis_b())+
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = theta_mat[,2]))+
+   scale_fill_viridis_b())+
+(ggplot(spat_obj$sf)+
+  geom_sf(aes(fill = theta_mat[,3]))+
+   scale_fill_viridis_b())
+```
+
+## Model fitting
+
+Fitting the model with Stan is simple. First we compile the full stan model stored externally, before running the `sampling` function. Note that because we're using the identity link function, the residual error is unidentified. To enable estimation, we fix it at the known value of `0.2`. 
+
+```{r}
+# compile model
+comp_e <- stan_model(file = "vignettes/stan/MPCAR.stan")
+
+# collect data into list
+data <- list(M = M, K = K,
+             theta_mat = theta_mat, D_W = D_W)
+data <- c(data, C_for_stan)
+
+# fit model
+m_s <- Sys.time()
+fit_e <- sampling(object = comp_e, 
+                  data = data, 
+                  chains = 2, iter = 2000, warmup = 1000,
+                  cores = 2)
+(rtmins_e <- as.numeric(Sys.time() - m_s, units = "mins"))
+
+# takes 20 mins for M=1000, K = 3 - without dot product
+# under 2 minute for M=1000, K = 3 - with dot product
+```
+
+Given we generated these data, we can assess how well our model estimates the known parameters. 
+
+```{r}
+# get summary
+summ <- summary(fit_e)$summary %>% 
+  as.data.frame() %>% 
+  mutate(n_eff_per_min = n_eff/rtmins_e) %>% 
+  rownames_to_column("parameter")
+
+# get rho and correlation matrix
+summ %>% filter(str_detect(parameter, "rho|sd_R|Cor_R\\["))
+rho
+Cor_R
+sqrt(diag(Sigma_R))
+```
+
+
+# References
+
+<div id="refs"></div>
