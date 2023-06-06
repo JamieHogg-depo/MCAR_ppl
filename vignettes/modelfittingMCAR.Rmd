@@ -139,14 +139,14 @@ M <- 2000
 # number of factors
 K <- 5
 # set the spatial smoothing parameter
-rho <- 0.90
+rho <- 0.90 # common to all factors
 
-# use our user-made function to get fully connected grid
+# Get weight matrix for fully connected grid
 spat_obj <- getGRID(M)
 W <- spat_obj$W
 M <- nrow(W)
 
-# size of multivariate normal
+# dimension of multivariate normal
 n <- M*K
 
 ## Spatial precision matrix ----
@@ -157,33 +157,35 @@ C <- diag(1/rowSums(W)) %*% W
 Omega_S <- D %*% (I - rho * C)
 # Use our user-made function to get the required
 # sparse elements from C
-# creates a list
-C_for_stan <- prep4MCAR(W)
+C_for_stan <- prep4MCAR(W) # creates a list
 
 ## Between factors precision matrix ----
+  # arbitrary selection
 Omega_R <- matrix(c(1.2,  0.7,  1.0,   0.2, 0.3,
                     0.7,  1.0, -1.0,   0.2, 0.4,
                     1.0, -1.0,  2.0,   0.2, 0.5,
                     0.2,  0.2,  0.2,   1.0, 0.7,
                     0.3,  0.4,  0.5,   0.7, 1.0), byrow = T, ncol = K)
-Omega_R <- Omega_R %*% t(Omega_R) # ensure positive definite
+# ensure matrix is positive definite
+Omega_R <- Omega_R %*% t(Omega_R) 
 # covariance matrix
 Sigma_R <- solve(Omega_R)
-# diagonal entries of lower cholesky
-Sigma_R_chol_d = diag(t(chol(Sigma_R)))
 # Correlation matrix
 Cor_R <- cov2cor(Sigma_R)
 
 ## Derive full precision matrix ----
 Omega_A <- kronecker(Omega_S, Omega_R)
-m_s <- Sys.time(); Sigma_A <- solve(Omega_A); Sys.time()-m_s
+
+## Derive full covariance matrix ----
+m_s <- Sys.time(); Sigma_A <- solve(Omega_A); Sys.time()-m_s # takes 15 mins
 
 # Generate multivariate outcome ----
 set.seed(80)
 # vector version
-m_s <- Sys.time(); theta <- MASS::mvrnorm(1, rep(0,n), Sigma_A); Sys.time()-m_s
+m_s <- Sys.time(); theta <- MASS::mvrnorm(1, rep(0,n), Sigma_A); Sys.time()-m_s # takes 35 mins
 theta_v <- t(theta )
-# matrix version
+
+# matrix version - as input needed for input Stan
 theta_mat <- matrix(theta_v, nrow = M, ncol = K, byrow = T)
 ```
 
@@ -212,30 +214,30 @@ y5 <- theta_mat[,5] %*% t(W/rowSums(W))
    scale_fill_viridis_b(n.breaks = 8))+
 (ggplot(spat_obj$sf)+
   geom_sf(aes(fill = theta_mat[,5]))+
-   scale_fill_viridis_b(n.breaks = 8))+
-(ggplot(spat_obj$sf)+
-  geom_sf(aes(fill = y1[1,]))+
-   scale_fill_viridis_b(n.breaks = 8))+
-(ggplot(spat_obj$sf)+
-  geom_sf(aes(fill = y2[1,]))+
-   scale_fill_viridis_b(n.breaks = 8))+
-(ggplot(spat_obj$sf)+
-  geom_sf(aes(fill = y3[1,]))+
-   scale_fill_viridis_b(n.breaks = 8))+
-(ggplot(spat_obj$sf)+
-  geom_sf(aes(fill = y4[1,]))+
-   scale_fill_viridis_b(n.breaks = 8))+
-(ggplot(spat_obj$sf)+
-  geom_sf(aes(fill = y5[1,]))+
-   scale_fill_viridis_b(n.breaks = 8))
+   scale_fill_viridis_b(n.breaks = 8))#+
+# (ggplot(spat_obj$sf)+
+#   geom_sf(aes(fill = y1[1,]))+
+#    scale_fill_viridis_b(n.breaks = 8))+
+# (ggplot(spat_obj$sf)+
+#   geom_sf(aes(fill = y2[1,]))+
+#    scale_fill_viridis_b(n.breaks = 8))+
+# (ggplot(spat_obj$sf)+
+#   geom_sf(aes(fill = y3[1,]))+
+#    scale_fill_viridis_b(n.breaks = 8))+
+# (ggplot(spat_obj$sf)+
+#   geom_sf(aes(fill = y4[1,]))+
+#    scale_fill_viridis_b(n.breaks = 8))+
+# (ggplot(spat_obj$sf)+
+#   geom_sf(aes(fill = y5[1,]))+
+#    scale_fill_viridis_b(n.breaks = 8))
 ```
 
 ## Model fitting
 
-Fitting the model with Stan is simple. First we compile the full stan model stored externally, before running the `sampling` function. Note that because we're using the identity link function, the residual error is unidentified. To enable estimation, we fix it at the known value of `0.2`. 
+Fitting the model with Stan is simple. First we compile the full Stan model stored externally, before running the `sampling` function.
 
 ```{r}
-# compile model
+# compile Stan model
 comp_e <- stan_model(file = "vignettes/stan/MPCAR.stan")
 
 # collect data into list
@@ -243,7 +245,7 @@ data <- list(M = M, K = K,
              theta_mat = theta_mat, D_W = D_W)
 data <- c(data, C_for_stan)
 
-# fit model
+# fit Stan model
 m_s <- Sys.time()
 fit_e <- sampling(object = comp_e, 
                   data = data, 
@@ -254,24 +256,27 @@ fit_e <- sampling(object = comp_e,
 # takes 20 mins for M=1000, K = 3 - without dot product
 # under 2 minute for M=1000, K = 3 - with dot product
 # under 4 minute for M=2000, K = 3 - with dot product
+# 7 mins to do M=2000, k = 5
 ```
 
-Given we generated these data, we can assess how well our model estimates the known parameters. 
+Given we generated these data, we can assess how well our model estimates the known parameters.  
 
 ```{r}
-# get summary
+# get summary of posterior draws
 summ <- summary(fit_e)$summary %>% 
   as.data.frame() %>% 
   mutate(n_eff_per_min = n_eff/rtmins_e) %>% 
   rownames_to_column("parameter")
 
-# get rho and correlation matrix
+# Compare rho and correlation matrix
 summ %>% filter(str_detect(parameter, "rho|sd_R|Cor_R\\["))
 rho
 Cor_R
-sqrt(diag(Sigma_R))
-```
 
+# Compare marginal variances
+sqrt(diag(Sigma_R))
+summ %>% filter(str_detect(parameter, "sd_R"))
+```
 
 # References
 
