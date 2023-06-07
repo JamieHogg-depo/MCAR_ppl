@@ -67,7 +67,8 @@ data{
 	int C_v[nC_w]; 
 	int C_u[M+1]; 
 	int offD_id_C_w[nC_w - M];		// indexes for off diagonal terms
-	int D_id_C_w[M]; 				// indexes for diagonal terms - length M	
+	int D_id_C_w[M]; 				// indexes for diagonal terms - length M
+	real rho_set;
 }
 parameters{
 	cholesky_factor_corr[K] Cor_R_chol; // Lower Cholesky of R
@@ -99,9 +100,19 @@ model{
 	target += std_normal_lpdf(sd_R); // prior for sigma
 	target += lkj_corr_cholesky_lpdf(Cor_R_chol | 2.0); // prior for cholesky factor of a correlation matrix
 	target += uniform_lpdf(rho | 0, 1);
-	target += MPCAR_lpdf(theta_mat | rho, Omega_R, Sigma_R, 
-	C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, D_W,
-	M, K);
+	if(rho_set == 1){
+		target += MPCAR_lpdf(theta_mat | 1.0, Omega_R, Sigma_R, 
+		C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, D_W,
+		M, K);
+	}else if(rho_set == 0){
+		target += MPCAR_lpdf(theta_mat | 0.0, Omega_R, Sigma_R, 
+		C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, D_W,
+		M, K);
+	}else{
+		target += MPCAR_lpdf(theta_mat | rho, Omega_R, Sigma_R, 
+		C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, D_W,
+		M, K);
+	}
 }
 
 

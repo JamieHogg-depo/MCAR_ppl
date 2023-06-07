@@ -25,6 +25,7 @@ library(spdep)
 library(mvtnorm)
 library(rstan)
 library(patchwork)
+library(randcorr)
 rm(list = ls())
 
 ## Functions ## ----------------------------------------------------------------
@@ -129,13 +130,15 @@ prep4MCAR <- function(W, type = "pcar"){
 
 Multivariate conditional autoregressive (MCAR) priors are one way of simultaneously accommodating spatial structure and dependence between several factors [@RN610].
 
+The key result from this analysis is the comparison of the accuracy and speed between the naive and efficient implementations of the proper multivariate CAR prior. The Stan code for the implementations can be found in `vignettes\stan`. Unfortunately given how computationally expensive the MPCAR is, and thus how prohibitively long it takes to sample, we use a very small example to start with. Here we simulate data from the corresponding MCAR distribution using 50 areas and 5 factors.  
+
 # Simulate data
 
 Before fitting our efficient Stan implementations in Stan we'll generate and visualize some multivariate spatial data using a normal likelihood. 
 
 ```{r eval=TRUE}
 # number of areas
-M <- 2000
+M <- 50
 # number of factors
 K <- 5
 # set the spatial smoothing parameter
@@ -159,19 +162,16 @@ Omega_S <- D %*% (I - rho * C)
 # sparse elements from C
 C_for_stan <- prep4MCAR(W) # creates a list
 
-## Between factors precision matrix ----
-  # arbitrary selection
-Omega_R <- matrix(c(1.2,  0.7,  1.0,   0.2, 0.3,
-                    0.7,  1.0, -1.0,   0.2, 0.4,
-                    1.0, -1.0,  2.0,   0.2, 0.5,
-                    0.2,  0.2,  0.2,   1.0, 0.7,
-                    0.3,  0.4,  0.5,   0.7, 1.0), byrow = T, ncol = K)
-# ensure matrix is positive definite
-Omega_R <- Omega_R %*% t(Omega_R) 
+## Between factors correlation matrix ----
+
+# sample correlation matrix
+set.seed(26)
+Cor_R <- randcorr(5)
+sd_R <- c(1,2,0.2,3,5)
 # covariance matrix
-Sigma_R <- solve(Omega_R)
-# Correlation matrix
-Cor_R <- cov2cor(Sigma_R)
+Sigma_R <- diag(sd_R) %*% Cor_R %*% diag(sd_R)
+# precision matrix
+Omega_R <- solve(Sigma_R)
 
 ## Derive full precision matrix ----
 Omega_A <- kronecker(Omega_S, Omega_R)
@@ -183,22 +183,15 @@ m_s <- Sys.time(); Sigma_A <- solve(Omega_A); Sys.time()-m_s # takes 15 mins
 set.seed(80)
 # vector version
 m_s <- Sys.time(); theta <- MASS::mvrnorm(1, rep(0,n), Sigma_A); Sys.time()-m_s # takes 35 mins
-theta_v <- t(theta )
+theta_v <- t(theta)
 
 # matrix version - as input needed for input Stan
 theta_mat <- matrix(theta_v, nrow = M, ncol = K, byrow = T)
 ```
 
-Now we visualize the three factors in separate grids. 
+Now we visualize the five factors in separate grids. 
 
 ```{r echo=F}
-# this
-y1 <- theta_mat[,1] %*% t(W/rowSums(W))
-y2 <- theta_mat[,2] %*% t(W/rowSums(W))
-y3 <- theta_mat[,3] %*% t(W/rowSums(W))
-y4 <- theta_mat[,4] %*% t(W/rowSums(W))
-y5 <- theta_mat[,5] %*% t(W/rowSums(W))
-
 # plots
 (ggplot(spat_obj$sf)+
   geom_sf(aes(fill = theta_mat[,1]))+
@@ -214,44 +207,69 @@ y5 <- theta_mat[,5] %*% t(W/rowSums(W))
    scale_fill_viridis_b(n.breaks = 8))+
 (ggplot(spat_obj$sf)+
   geom_sf(aes(fill = theta_mat[,5]))+
-   scale_fill_viridis_b(n.breaks = 8))#+
-# (ggplot(spat_obj$sf)+
-#   geom_sf(aes(fill = y1[1,]))+
-#    scale_fill_viridis_b(n.breaks = 8))+
-# (ggplot(spat_obj$sf)+
-#   geom_sf(aes(fill = y2[1,]))+
-#    scale_fill_viridis_b(n.breaks = 8))+
-# (ggplot(spat_obj$sf)+
-#   geom_sf(aes(fill = y3[1,]))+
-#    scale_fill_viridis_b(n.breaks = 8))+
-# (ggplot(spat_obj$sf)+
-#   geom_sf(aes(fill = y4[1,]))+
-#    scale_fill_viridis_b(n.breaks = 8))+
-# (ggplot(spat_obj$sf)+
-#   geom_sf(aes(fill = y5[1,]))+
-#    scale_fill_viridis_b(n.breaks = 8))
+   scale_fill_viridis_b(n.breaks = 8))
 ```
 
 ## Model fitting
 
-Fitting the model with Stan is simple. First we compile the full Stan model stored externally, before running the `sampling` function.
+Compile the models.
 
 ```{r}
-# compile Stan model
+comp_n <- stan_model(file = "vignettes/stan/MPCAR_naive.stan")
 comp_e <- stan_model(file = "vignettes/stan/MPCAR.stan")
+```
 
-# collect data into list
-data <- list(M = M, K = K,
-             theta_mat = theta_mat, D_W = D_W)
-data <- c(data, C_for_stan)
+Collect the two sets of data into their respective lists. 
 
-# fit Stan model
+```{r}
+# Naive
+data_n <- list(M = M, K = K,
+             theta_v = theta, D_W = D_W, C = C, zero = rep(0, M*K))
+
+# Efficient
+data_e <- list(M = M, K = K,
+             theta_mat = theta_mat, D_W = D_W,
+             rho_set = -1)
+data_e <- c(data_e, C_for_stan)
+```
+
+Fit the two models, keeping track of their running time. 
+
+```{r}
+# Naive
+  m_s <- Sys.time()
+  fit_n <- sampling(object = comp_n, 
+                  data = data_n,
+                  # don't include Omega_A or Omega_S in the output
+                  pars = c("Omega_A", "Omega_S"),
+                  include = FALSE,
+                  chains = 2, iter = 2000, warmup = 1000,
+                  cores = 2) #, refresh = 0)
+  (rtmins_n <- as.numeric(Sys.time() - m_s, units = "mins"))
+  # Summarize
+    # get draws
+    its_n <- rstan::extract(fit_n)
+    # get summary
+    summ_n <- summary(fit_n)$summary %>% 
+      as.data.frame() %>% 
+      mutate(n_eff_per_min = n_eff/rtmins_n) %>% 
+      rownames_to_column("parameter")
+
+# Efficient
 m_s <- Sys.time()
 fit_e <- sampling(object = comp_e, 
-                  data = data, 
+                  data = data_e, 
                   chains = 2, iter = 2000, warmup = 1000,
-                  cores = 2, refresh = 0)
+                  cores = 2) #, refresh = 0)
 (rtmins_e <- as.numeric(Sys.time() - m_s, units = "mins"))
+  # Summarise
+    # get draws
+    its_e <- rstan::extract(fit_e)
+    # get summary
+    summ_e <- summary(fit_e)$summary %>% 
+      as.data.frame() %>% 
+      mutate(n_eff_per_min = n_eff/rtmins_e) %>% 
+      rownames_to_column("parameter")
 
 # takes 20 mins for M=1000, K = 3 - without dot product
 # under 2 minute for M=1000, K = 3 - with dot product
@@ -259,24 +277,275 @@ fit_e <- sampling(object = comp_e,
 # 7 mins to do M=2000, k = 5
 ```
 
-Given we generated these data, we can assess how well our model estimates the known parameters.  
+Given we generated these data, we can assess how well our model estimates the known parameters. We'll start with the spatial autocorrelation parameter, $\rho$. 
+
+```{r echo = FALSE}
+# plot the density
+data.frame(efficient = its_e$rho,
+           naive = its_n$rho) %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(aes(x = value, col = name))+theme_bw()+
+  geom_density()+
+  geom_vline(xintercept = rho)
+
+# compare the sampling efficiency
+cbind(summ_e %>% 
+        filter(str_detect(parameter, "rho")) %>% 
+        dplyr::select(parameter, n_eff_per_min) %>% 
+        rename(efficient = n_eff_per_min),
+      summ_n %>% 
+        filter(str_detect(parameter, "rho")) %>% 
+        dplyr::select(n_eff_per_min) %>% 
+        rename(naive = n_eff_per_min))
+```
+
+As we'd expect our efficient implementation gives a very similar marginal posterior for $\rho$, but with 35 times the sampling efficiency . Next, we'll examine the marginal posteriors for the standard deviations. 
+
+```{r echo = FALSE}
+# plot the density
+ll <- list()
+for(i in 1:5){
+  ll[[i]] <- data.frame(efficient = its_e$sd_R[,i],
+           naive = its_n$sd_R[,i]) %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(aes(x = value, fill = name))+theme_bw()+
+  geom_density(alpha = 0.3)+
+  geom_vline(xintercept = Sigma_R[i,i])+
+  labs(title = paste0("sd_R[", i, "]"),
+       fill = "")
+}
+ll[[1]]+ll[[2]]+ll[[3]]+ll[[4]]+ll[[5]]
+
+# compare the sampling efficiency
+cbind(summ_e %>% 
+        filter(str_detect(parameter, "sd_R")) %>% 
+        dplyr::select(parameter, n_eff_per_min) %>% 
+        rename(efficient = n_eff_per_min),
+      summ_n %>% 
+        filter(str_detect(parameter, "sd_R")) %>% 
+        dplyr::select(n_eff_per_min) %>% 
+        rename(naive = n_eff_per_min))
+```
+
+Similar to before, the naive and efficient implementations provide very similar marginal posterior densities. This time, our approach provides 40 times better sampling efficiency. 
+
+Finally, we'll investigate the posterior densities of the parameters in the first row of the correlation matrix.
+
 
 ```{r}
-# get summary of posterior draws
-summ <- summary(fit_e)$summary %>% 
-  as.data.frame() %>% 
-  mutate(n_eff_per_min = n_eff/rtmins_e) %>% 
-  rownames_to_column("parameter")
+# plot the density
+ll <- list()
+for(i in 2:5){
+  ll[[i]] <- data.frame(efficient = its_e$Cor_R[,1,i],
+           naive = its_n$Cor_R[,1,i]) %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(aes(x = value, fill = name))+theme_bw()+
+  geom_density(alpha = 0.3)+
+  geom_vline(xintercept = Cor_R[1,i])+
+  labs(title = paste0("Cor_R[1,", i, "]"),
+       fill = "")
+}
+ll[[2]]+ll[[3]]+ll[[4]]+ll[[5]]
 
-# Compare rho and correlation matrix
-summ %>% filter(str_detect(parameter, "rho|sd_R|Cor_R\\["))
-rho
-Cor_R
-
-# Compare marginal variances
-sqrt(diag(Sigma_R))
-summ %>% filter(str_detect(parameter, "sd_R"))
+# compare the sampling efficiency
+cbind(summ_e %>% 
+        filter(str_detect(parameter, "Cor_R\\[1,")) %>% 
+        dplyr::select(parameter, n_eff_per_min) %>% 
+        rename(efficient = n_eff_per_min),
+      summ_n %>% 
+        filter(str_detect(parameter, "Cor_R\\[1,")) %>% 
+        dplyr::select(n_eff_per_min) %>% 
+        rename(naive = n_eff_per_min))
 ```
+
+## Stress test
+
+The example above was on a relatively small dataset as we wanted to fit the naive approach. In this section, we'll generate a wide range of much larger datasets in order to assess the scalability of our efficient implementation. In addition to the size of the data, we consider a range `c(0,0.2,0.5,0.8,0.98)` for `rho`. 
+
+```{r echo=FALSE, eval=FALSE}
+grid <- expand.grid(M = c(200, 500, 1000, 2000),
+                    rho = c(0, 0.2, 0.5, 0.8, 0.98))
+
+for(i in 1:nrow(grid)){
+  
+# number of areas
+M <- grid$M[i]
+# number of factors
+K <- 5
+# set the spatial smoothing parameter
+rho <- grid$rho[i] # common to all factors
+
+# Get weight matrix for fully connected grid
+spat_obj <- getGRID(M)
+W <- spat_obj$W
+M <- nrow(W)
+
+# dimension of multivariate normal
+n <- M*K
+
+## Spatial precision matrix ----
+I <- diag(x=1, nrow = M)
+D <- diag(rowSums(W))
+D_W <- rowSums(W)
+C <- diag(1/rowSums(W)) %*% W
+Omega_S <- D %*% (I - rho * C)
+# Use our user-made function to get the required
+# sparse elements from C
+C_for_stan <- prep4MCAR(W) # creates a list
+
+## Between factors correlation matrix ----
+set.seed(26)
+Cor_R <- randcorr(K)
+sd_R <- c(1,2,0.2,3,5)
+# covariance matrix
+Sigma_R <- diag(sd_R) %*% Cor_R %*% diag(sd_R)
+# precision matrix
+Omega_R <- solve(Sigma_R)
+
+## Derive full precision matrix ----
+Omega_A <- kronecker(Omega_S, Omega_R)
+
+## Derive full covariance matrix ----
+m_s <- Sys.time(); Sigma_A <- solve(Omega_A); Sys.time()-m_s # takes 15 mins
+
+# Generate multivariate outcome ----
+set.seed(80)
+# vector version
+m_s <- Sys.time(); theta <- MASS::mvrnorm(1, rep(0,n), Sigma_A); Sys.time()-m_s # takes 35 mins
+theta_v <- t(theta)
+
+# matrix version - as input needed for input Stan
+theta_mat <- matrix(theta_v, nrow = M, ncol = K, byrow = T)
+
+# save data
+saveRDS(list(spat_obj = spat_obj,
+             C_for_stan = C_for_stan,
+             D_W = D_W,
+             theta_mat = theta_mat, 
+             Sigma_R = Sigma_R, 
+             Cor_R = Cor_R), 
+        paste0("data/data_m", M, "_k", K, "_rho", str_remove(rho, "\\."), ".rds"))
+
+message("Finished ", i)
+}
+```
+
+Collect the two sets of data into their respective lists. 
+
+```{r, echo=FALSE, eval=FALSE}
+# create grid
+grid <- expand.grid(M = c(200, 500, 1000, 2000),
+                    rho = c(0, 0.2, 0.5, 0.8, 0.98)) %>% 
+  mutate(rtmins = as.numeric(NA),
+         rho_median = as.numeric(NA),
+         rho_se = as.numeric(NA),
+         rho_eff = as.numeric(NA))
+
+# fun for loop
+for(i in 1:nrow(grid)){
+  
+        # number of areas
+        M <- grid$M[i]
+        # number of factors
+        K <- 5
+        # set the spatial smoothing parameter
+        rho <- grid$rho[i] # common to all factors
+        
+        # Get weight matrix for fully connected grid
+        spat_obj <- getGRID(M)
+        W <- spat_obj$W
+        M <- nrow(W)
+        
+        # dimension of multivariate normal
+        n <- M*K
+        
+        ## Spatial precision matrix ----
+        I <- diag(x=1, nrow = M)
+        D <- diag(rowSums(W))
+        D_W <- rowSums(W)
+        C <- diag(1/rowSums(W)) %*% W
+        Omega_S <- D %*% (I - rho * C)
+        # Use our user-made function to get the required
+        # sparse elements from C
+        C_for_stan <- prep4MCAR(W) # creates a list
+  
+  # load data
+  out <- readRDS(paste0("data/data_m", M, "_k", K, "_rho", str_remove(rho, "\\."), ".rds"))
+  list2env(out, globalenv())
+  
+  # data list
+  data_e <- list(M = M, K = K,
+             theta_mat = theta_mat, D_W = D_W,
+             rho_set = -1)
+  data_e <- c(data_e, C_for_stan)
+  
+  # Run model
+  m_s <- Sys.time()
+  fit_e <- sampling(object = comp_e, 
+                  data = data_e, 
+                  chains = 2, iter = 2000, warmup = 1000,
+                  cores = 2, refresh = 0)
+  grid$rtmins[i] <- as.numeric(Sys.time() - m_s, units = "mins")
+  summ_e <- summary(fit_e)$summary %>% 
+      as.data.frame() %>% 
+      mutate(n_eff_per_min = n_eff/grid$rtmins[i]) %>% 
+      rownames_to_column("parameter")
+  
+  # summarize rho
+  its_e <- rstan::extract(fit_e)
+  grid$rho_median[i] <- median(its_e$rho)
+  grid$rho_se[i] <- sd(its_e$rho)
+  grid$rho_eff[i] <- (summ_e %>% filter(str_detect(parameter, "rho")))$n_eff_per_min
+  
+  message("Finished ", i)
+}
+
+saveRDS(grid, paste0("data/completed_grid.rds"))
+```
+
+Fitting our efficient implementation to all combinations of `M` and `rho`, we can visualize the accuracy and sampling efficiency. To enable a fair comparison, we'll compare the sampling efficiency for `rho`. 
+
+```{r}
+# run time
+(grid %>% 
+  ggplot(aes(y = rtmins, x = M))+
+  theme_bw()+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  labs(y = "Run time (mins)",
+       x = "Number of areas"))+
+(grid %>% 
+  ggplot(aes(y = rtmins, x = rho))+
+  theme_bw()+
+  geom_point()+
+  labs(y = "Run time (mins)",
+       x = "rho"))
+
+# efficiency
+(grid %>% 
+  ggplot(aes(y = rho_eff, x = M))+
+  theme_bw()+
+  geom_point()+
+  geom_smooth()+
+  labs(y = "ESS per minute for rho",
+       x = "Number of areas"))+
+(grid %>% 
+  ggplot(aes(y = rho_eff, x = rho))+
+  theme_bw()+
+  geom_point()+
+  labs(y = "ESS per minute for rho",
+       x = "rho"))
+
+# posterior median
+grid %>% 
+  ggplot(aes(y = rho_median, x = rho))+
+  theme_bw()+
+  geom_point()+
+  geom_abline()+
+  labs(y = "Posterior median of rho",
+       x = "Fixed rho")
+```
+
 
 # References
 
