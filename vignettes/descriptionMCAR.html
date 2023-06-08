@@ -203,6 +203,7 @@ pre code {
 <li><a href="#determinant">Determinant</a></li>
 <li><a href="#squared-term">Squared term</a></li>
 <li><a href="#stan-implementations">Stan implementations</a></li>
+<li><a href="#univariate">Univariate</a></li>
 </ul></li>
 <li><a href="#leroux-prior">Leroux prior</a>
 <ul>
@@ -231,7 +232,7 @@ pre code {
 <p><span class="math display">\[
 -0.5 \left[ n \text{log}\left( 2\pi \right) - \text{log}\left( \left| \mathbf{\Omega}^A \right| \right) + (\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y}) \right]
 \]</span></p>
-<p>To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, <span class="math inline">\((\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y})\)</span>.</p>
+<p>To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, <span class="math inline">\((\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y})\)</span>. Note that when <span class="math inline">\(\rho = 1\)</span>, <span class="math inline">\(\left| \mathbf{\Omega}^A \right| = 0\)</span>; the result is the multivariate extension of the ICAR prior with a simpler log-likelihood of <span class="math inline">\(-0.5 \left[ n \text{log}\left( 2\pi \right) + (\mathbf{y})&#39; \mathbf{\Omega}^A (\mathbf{y}) \right]\)</span>.</p>
 </div>
 <div id="the-proper-car-prior" class="section level1">
 <h1>The proper CAR prior</h1>
@@ -460,12 +461,12 @@ sum(ddd); km4 &lt;- Sys.time()-s</code></pre>
 data.frame(method = c(&quot;Standard&quot;, &quot;Trace&quot;, &quot;Componentwise&quot;, &quot;Partition&quot;, &quot;Partition_dp&quot;),
            time = c(st, km2, cm, km3, km4)) %&gt;% 
   mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
-<pre><code>##          method        time
-## 1      Standard 0.181579113
-## 2         Trace 0.010303974
-## 3 Componentwise 0.006968975
-## 4     Partition 0.036331892
-## 5  Partition_dp 0.023571014</code></pre>
+<pre><code>##          method       time
+## 1      Standard 0.16168404
+## 2         Trace 0.01226115
+## 3 Componentwise 0.00000000
+## 4     Partition 0.03500795
+## 5  Partition_dp 0.01725483</code></pre>
 <p>Success! By using the matrix normal setup, we recover the same squared error term, but much faster.</p>
 </div>
 <div id="stan-implementations" class="section level2">
@@ -543,21 +544,20 @@ functions{
 **
 @return Log probability density
 */
-real MCARt1_lpdf(
-    matrix y_mat,               // input pars in matrix form M x K
-    real rho,                   // spatial smoothing parameter
-    matrix Omega_R,             // Precision matrix for factors
-    matrix Sigma_R,             // Covariance matrix for factors
+real MPCAR_lpdf(
+    matrix y_mat,                   // input pars in matrix form M x K
+    real rho,                       // spatial smoothing parameter
+    matrix Omega_R,               // Precision matrix for factors
+    matrix Sigma_R,               // Covariance matrix for factors
     vector C_w , 
     int [] C_v , 
     int [] C_u , 
     int [] offD_id_C_w ,        // indexes for off diagonal terms
-    int [] D_id_C_w ,       // indexes for diagonal terms - length M
+    int [] D_id_C_w ,         // indexes for diagonal terms - length M
     vector C_eigenvalues,       // eigenvalues for C
     vector D_W,
-    int M,                      // Number of areas
-    int K) {                    // Number of factors
-        vector[M] ldet_C;
+    int M,                            // Number of areas
+    int K) {                          // Number of factors
         vector[M] diag_term;
         vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
         matrix[K, M] A_R = Omega_R * y_mat&#39;;
@@ -577,15 +577,61 @@ real MCARt1_lpdf(
             diag_term[i] = D_W[i] * dot_product( A_S[i,], A_R[,i]);
         }  
     real sq_term = sum( diag_term );
-    ldet_C = log1m( rho * C_eigenvalues );
-        // real sq_term = sum( D_W .* diagonal( A_S * A_R ) );
-        //for(i in 1:M){
-            // equivelant to log(1-rho * C_eigenvalues[i])
-            //ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
-        //}
+    vector[M] ldet_C = log1m( rho * C_eigenvalues );
     return -0.5 * ( 
         M*K*log( 2 * pi() ) 
         -  ( - 2 * M * sum( log_d_Sigma_R_chol ) + K * sum( ldet_C ) + K * sum( log(D_W)) ) + sq_term 
+        );
+}
+}
+
+&quot;
+
+# Fast implementation
+eff_micar &lt;- &quot;
+functions{
+/**
+* Log probability density of the multivariate conditional autoregressive (MCAR) model - type1
+* @param y_mat input pars in matrix form (M x K)
+* @param rho Spatial dependence parameter
+* @param C matrix that represents spatial neighborhood 
+* @param C_eigenvalues eigenvalues of C
+* @param M number of areas
+* @param K number of factors
+**
+@return Log probability density
+*/
+real MICAR_lpdf(
+    matrix y_mat,                   // input pars in matrix form M x K
+    matrix Omega_R,               // Precision matrix for factors
+    vector C_w , 
+    int [] C_v , 
+    int [] C_u , 
+    int [] offD_id_C_w ,        // indexes for off diagonal terms
+    int [] D_id_C_w ,         // indexes for diagonal terms - length M
+    vector D_W,
+    int M,                            // Number of areas
+    int K) {                          // Number of factors
+        vector[M] diag_term;
+        matrix[K, M] A_R = Omega_R * y_mat&#39;;
+        // Alternative specification for A_S
+        // Omega_S as sparse matrix multiplied by columns of y_mat 
+        // using crs_matrix_times_vector
+            vector [ num_elements(C_w) ] ImrhoC;
+            matrix[M, K] A_S;
+            // Multiple off-diagonal elements by rho
+            ImrhoC [ offD_id_C_w ] = - C_w[ offD_id_C_w ];
+            // Calculate diagonal elements of ImrhoC
+            ImrhoC [ D_id_C_w ] = C_w[ D_id_C_w ];
+            for(k in 1:K){
+                A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, y_mat[,k] );
+            }
+        for(i in 1:M){
+            diag_term[i] = D_W[i] * dot_product( A_S[i,], A_R[,i]);
+        }  
+    real sq_term = sum( diag_term );
+    return -0.5 * ( 
+          M*K*log( 2 * pi() ) + sq_term 
         );
 }
 }
@@ -599,10 +645,13 @@ comp_naiveeff &lt;- stan_model(model_code = naiveeff_model)
 expose_stan_functions(comp_naiveeff)
 
 comp_eff &lt;- stan_model(model_code = eff_model)
-expose_stan_functions(comp_eff)</code></pre>
+expose_stan_functions(comp_eff)
+
+comp_eff2 &lt;- stan_model(model_code = eff_micar)
+expose_stan_functions(comp_eff2)</code></pre>
 <p>All that is left to do is generate some fake data and ensure that all three functions give identical log-likelihoods like we expect.</p>
 <pre class="r"><code># number of areas
-M &lt;- 1500
+M &lt;- 100
 # number of factors
 K &lt;- 3
 # set the spatial smoothing parameter
@@ -656,19 +705,19 @@ A_R &lt;- as.matrix(Omega_R %*% t(y_mat))
 
 # Standard approach
 mvtnorm::dmvnorm(y_v, rep(0,M*K), Sigma_A, log = T)</code></pre>
-<pre><code>## [1] -0.8361667</code></pre>
+<pre><code>## [1] -25.87599</code></pre>
 <pre class="r"><code># Our implementation
 -0.5 * ( M*K*log(2*pi)
 - ( -2*M*sum(log(Sigma_R_chol_d)) 
    + K * sum(log(1-rho*C_for_stan$C_eigenvalues)) 
    + K * sum(log(diag(D))) ) 
 + sum(A_R * t(A_S)) )</code></pre>
-<pre><code>## [1] -0.8361667</code></pre>
+<pre><code>## [1] -25.87599</code></pre>
 <pre class="r"><code>## Check log-likelihoods - in Stan ## ------------------------------------------
 
 # Standard or naive
 s=Sys.time(); standardMCAR_lpdf(y_v, rep(0,M*K), as.matrix(Omega_A)); st &lt;- Sys.time()-s</code></pre>
-<pre><code>## [1] -0.8361667</code></pre>
+<pre><code>## [1] -25.87599</code></pre>
 <pre class="r"><code># naive efficient
 s=Sys.time()
 MCARnet1_lpdf(y_mat, rho, 
@@ -676,12 +725,12 @@ MCARnet1_lpdf(y_mat, rho,
               as.matrix(Sigma_R), 
               as.matrix(Omega_S), 
               as.matrix(C), C_for_stan$C_eigenvalues, D_W, M, K)</code></pre>
-<pre><code>## [1] -0.8361667</code></pre>
+<pre><code>## [1] -25.87599</code></pre>
 <pre class="r"><code>ne &lt;- Sys.time()-s
 
 # Efficient (or fast)
 s=Sys.time() 
-MCARt1_lpdf(y_mat, rho, 
+MPCAR_lpdf(y_mat, rho, 
             as.matrix(Omega_R), 
             as.matrix(Sigma_R), 
             C_for_stan$C_w, 
@@ -690,19 +739,85 @@ MCARt1_lpdf(y_mat, rho,
             C_for_stan$offD_id_C_w, 
             C_for_stan$D_id_C_w, 
             C_for_stan$C_eigenvalues, D_W, M, K)</code></pre>
-<pre><code>## [1] -0.8361667</code></pre>
+<pre><code>## [1] -25.87599</code></pre>
 <pre class="r"><code>eff &lt;- Sys.time()-s
+
+# Efficient (or fast)
+s=Sys.time() 
+MICAR_lpdf(y_mat,
+            as.matrix(Omega_R), 
+            C_for_stan$C_w, 
+            C_for_stan$C_v, 
+            C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, 
+            C_for_stan$D_id_C_w, 
+            D_W, M, K)</code></pre>
+<pre><code>## [1] -425.6577</code></pre>
+<pre class="r"><code>eff2 &lt;- Sys.time()-s
 
 ## Time check ## ---------------------------------------------------------------
 
-data.frame(method = c(&quot;Standard&quot;, &quot;Naive efficient&quot;, &quot;Efficient&quot;),
-           time = c(st, ne, eff)) %&gt;% 
+data.frame(method = c(&quot;Standard&quot;, &quot;Naive efficient&quot;, &quot;Efficient&quot;, &quot;Efficient MICAR&quot;),
+           time = c(st, ne, eff, eff2)) %&gt;% 
   mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
-<pre><code>##            method         time
-## 1        Standard 13.848710060
-## 2 Naive efficient  0.031670809
-## 3       Efficient  0.006191015</code></pre>
+<pre><code>##            method        time
+## 1        Standard 0.003315926
+## 2 Naive efficient 0.001966000
+## 3       Efficient 0.002035856
+## 4 Efficient MICAR 0.001996040</code></pre>
 <p>Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With <code>M=1500</code> and <code>K=3</code> we find that the fast implementation is around 150 times faster.</p>
+</div>
+<div id="univariate" class="section level2">
+<h2>Univariate</h2>
+<p>The <code>MPCAR_lpdf</code> and <code>MICAR_lpdf</code> can also be used for univariate random effects. That is where <span class="math inline">\(k=1\)</span>. Consider the following example for the PCAR.</p>
+<pre class="r"><code># number of areas
+M &lt;- 100
+# set the spatial smoothing parameter
+rho &lt;- 0.4
+
+# use our user-made function to get fully connected grid
+W &lt;- getGRID(M)$W
+M &lt;- nrow(W)
+n &lt;- M
+
+## Spatial precision matrix ----
+I &lt;- diag(x=1, nrow = M)
+D &lt;- diag(rowSums(W))
+D_W &lt;- rowSums(W)
+C &lt;- solve(D) %*% W
+Omega_S &lt;- D %*% (I - rho * C)
+# Use our user-made function to get the required
+# sparse elements from C
+# creates a list
+C_for_stan &lt;- prep4MCAR(W, type = &quot;pcar&quot;)
+
+## Univariate marginal variance ----
+variance  &lt;- 1.2
+precision &lt;- 1/1.2
+Omega_A &lt;- precision * Omega_S
+Sigma_A &lt;- solve(Omega_A)
+
+# Generate some fake data ----
+set.seed(80)
+# vector version
+y &lt;- MASS::mvrnorm(1, rep(0,n), Sigma_A)
+y_v &lt;- t(y)
+# matrix version
+y_mat &lt;- matrix(y_v, nrow = M, ncol = 1, byrow = T)
+
+## Check ## ----
+standardMCAR_lpdf(y_v, rep(0,M), as.matrix(Omega_A))</code></pre>
+<pre><code>## [1] -65.11195</code></pre>
+<pre class="r"><code>MPCAR_lpdf(y_mat, rho, 
+            as.matrix(precision), 
+            as.matrix(variance), 
+            C_for_stan$C_w, 
+            C_for_stan$C_v, 
+            C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, 
+            C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, D_W, M, 1)</code></pre>
+<pre><code>## [1] -65.11195</code></pre>
 </div>
 </div>
 <div id="leroux-prior" class="section level1">
@@ -865,7 +980,7 @@ s=Sys.time()
 A_S &lt;- Omega_S %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
 psych::tr(A_S %*% A_R); km2 &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
-<p>Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took 0.19 seconds, while ours took 0.01 seconds. Unlike the standard approach which requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications, our approach only requires <span class="math inline">\(MK(M + 2K)\)</span>.</p>
+<p>Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took 0.2 seconds, while ours took 0.02 seconds. Unlike the standard approach which requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications, our approach only requires <span class="math inline">\(MK(M + 2K)\)</span>.</p>
 <p>An alternative to deriving the trace of the matrix multiplication of <span class="math inline">\(\mathbf{A}^S\)</span> and <span class="math inline">\(\mathbf{A}^R\)</span> is to sum all the elements of the componentwise multiplication of <span class="math inline">\(\mathbf{A}^R\)</span> and <span class="math inline">\(\left(  \mathbf{A}^S  \right)^T\)</span>, which only involves <span class="math inline">\(MK(M + K + 1)\)</span> scalar multiplications.</p>
 <pre class="r"><code># Standard squared term
 (t(y) %*% kronecker(Omega_S, Omega_R) %*% y) # v1</code></pre>
@@ -1078,10 +1193,10 @@ MCARt1_lpdf(y_mat, rho, Omega_R, Sigma_R,
 data.frame(method = c(&quot;Standard&quot;, &quot;Naive efficient&quot;, &quot;Efficient&quot;),
            time = c(st, ne, eff)) %&gt;% 
   mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
-<pre><code>##            method         time
-## 1        Standard 12.227417946
-## 2 Naive efficient  0.039725780
-## 3       Efficient  0.009010792</code></pre>
+<pre><code>##            method       time
+## 1        Standard 8.68735504
+## 2 Naive efficient 0.01767516
+## 3       Efficient 0.00000000</code></pre>
 <p>Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With <code>M=1500</code> and <code>K=3</code> we find that the fast implementation is around 150 times faster.</p>
 </div>
 </div>

@@ -171,7 +171,7 @@ $$
 -0.5 \left[ n \text{log}\left( 2\pi \right) - \text{log}\left( \left| \mathbf{\Omega}^A \right| \right) + (\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y}) \right]
 $$
 
-To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$.
+To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$. Note that when $\rho = 1$, $\left| \mathbf{\Omega}^A \right| = 0$; the result is the multivariate extension of the ICAR prior with a simpler log-likelihood of $-0.5 \left[ n \text{log}\left( 2\pi \right) + (\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y}) \right]$. 
 
 # The proper CAR prior
 
@@ -508,21 +508,20 @@ functions{
 **
 @return Log probability density
 */
-real MCARt1_lpdf(
-	matrix y_mat,				// input pars in matrix form M x K
-	real rho, 					// spatial smoothing parameter
-	matrix Omega_R, 			// Precision matrix for factors
-	matrix Sigma_R, 			// Covariance matrix for factors
+real MPCAR_lpdf(
+	matrix y_mat,				    // input pars in matrix form M x K
+	real rho, 					    // spatial smoothing parameter
+	matrix Omega_R, 			  // Precision matrix for factors
+	matrix Sigma_R, 			  // Covariance matrix for factors
 	vector C_w , 
 	int [] C_v , 
 	int [] C_u , 
 	int [] offD_id_C_w ,		// indexes for off diagonal terms
-	int [] D_id_C_w , 		// indexes for diagonal terms - length M
+	int [] D_id_C_w , 		  // indexes for diagonal terms - length M
 	vector C_eigenvalues,		// eigenvalues for C
 	vector D_W,
-	int M, 						// Number of areas
-	int K) { 					// Number of factors
-		vector[M] ldet_C;
+	int M, 						      // Number of areas
+	int K) { 					      // Number of factors
 		vector[M] diag_term;
 		vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
 		matrix[K, M] A_R = Omega_R * y_mat';
@@ -542,15 +541,61 @@ real MCARt1_lpdf(
 			diag_term[i] = D_W[i] * dot_product( A_S[i,], A_R[,i]);
 		}  
     real sq_term = sum( diag_term );
-    ldet_C = log1m( rho * C_eigenvalues );
-		// real sq_term = sum( D_W .* diagonal( A_S * A_R ) );
-		//for(i in 1:M){
-			// equivelant to log(1-rho * C_eigenvalues[i])
-			//ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
-		//}
+    vector[M] ldet_C = log1m( rho * C_eigenvalues );
     return -0.5 * ( 
 		M*K*log( 2 * pi() ) 
 		-  ( - 2 * M * sum( log_d_Sigma_R_chol ) + K * sum( ldet_C ) + K * sum( log(D_W)) ) + sq_term 
+		);
+}
+}
+
+"
+
+# Fast implementation
+eff_micar <- "
+functions{
+/**
+* Log probability density of the multivariate conditional autoregressive (MCAR) model - type1
+* @param y_mat input pars in matrix form (M x K)
+* @param rho Spatial dependence parameter
+* @param C matrix that represents spatial neighborhood 
+* @param C_eigenvalues eigenvalues of C
+* @param M number of areas
+* @param K number of factors
+**
+@return Log probability density
+*/
+real MICAR_lpdf(
+	matrix y_mat,				    // input pars in matrix form M x K
+	matrix Omega_R, 			  // Precision matrix for factors
+	vector C_w , 
+	int [] C_v , 
+	int [] C_u , 
+	int [] offD_id_C_w ,		// indexes for off diagonal terms
+	int [] D_id_C_w , 		  // indexes for diagonal terms - length M
+	vector D_W,
+	int M, 						      // Number of areas
+	int K) { 					      // Number of factors
+		vector[M] diag_term;
+		matrix[K, M] A_R = Omega_R * y_mat';
+		// Alternative specification for A_S
+		// Omega_S as sparse matrix multiplied by columns of y_mat 
+		// using crs_matrix_times_vector
+			vector [ num_elements(C_w) ] ImrhoC;
+			matrix[M, K] A_S;
+			// Multiple off-diagonal elements by rho
+			ImrhoC [ offD_id_C_w ] = - C_w[ offD_id_C_w ];
+			// Calculate diagonal elements of ImrhoC
+			ImrhoC [ D_id_C_w ] = C_w[ D_id_C_w ];
+			for(k in 1:K){
+				A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, y_mat[,k] );
+			}
+		for(i in 1:M){
+			diag_term[i] = D_W[i] * dot_product( A_S[i,], A_R[,i]);
+		}  
+    real sq_term = sum( diag_term );
+    return -0.5 * ( 
+		  M*K*log( 2 * pi() ) + sq_term 
 		);
 }
 }
@@ -569,13 +614,16 @@ expose_stan_functions(comp_naiveeff)
 
 comp_eff <- stan_model(model_code = eff_model)
 expose_stan_functions(comp_eff)
+
+comp_eff2 <- stan_model(model_code = eff_micar)
+expose_stan_functions(comp_eff2)
 ```
 
 All that is left to do is generate some fake data and ensure that all three functions give identical log-likelihoods like we expect. 
 
 ```{r eval=TRUE}
 # number of areas
-M <- 1500
+M <- 100
 # number of factors
 K <- 3
 # set the spatial smoothing parameter
@@ -653,7 +701,7 @@ ne <- Sys.time()-s
 
 # Efficient (or fast)
 s=Sys.time() 
-MCARt1_lpdf(y_mat, rho, 
+MPCAR_lpdf(y_mat, rho, 
             as.matrix(Omega_R), 
             as.matrix(Sigma_R), 
             C_for_stan$C_w, 
@@ -664,15 +712,82 @@ MCARt1_lpdf(y_mat, rho,
             C_for_stan$C_eigenvalues, D_W, M, K)
 eff <- Sys.time()-s
 
+# Efficient (or fast)
+s=Sys.time() 
+MICAR_lpdf(y_mat,
+            as.matrix(Omega_R), 
+            C_for_stan$C_w, 
+            C_for_stan$C_v, 
+            C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, 
+            C_for_stan$D_id_C_w, 
+            D_W, M, K)
+eff2 <- Sys.time()-s
+
 ## Time check ## ---------------------------------------------------------------
 
-data.frame(method = c("Standard", "Naive efficient", "Efficient"),
-           time = c(st, ne, eff)) %>% 
+data.frame(method = c("Standard", "Naive efficient", "Efficient", "Efficient MICAR"),
+           time = c(st, ne, eff, eff2)) %>% 
   mutate(time = as.numeric(time, units = "secs"))
 
 ```
 
 Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With `M=1500` and `K=3` we find that the fast implementation is around 150 times faster. 
+
+## Univariate
+
+The `MPCAR_lpdf` and `MICAR_lpdf` can also be used for univariate random effects. That is where $k=1$. Consider the following example for the PCAR. 
+
+```{r}
+# number of areas
+M <- 100
+# set the spatial smoothing parameter
+rho <- 0.4
+
+# use our user-made function to get fully connected grid
+W <- getGRID(M)$W
+M <- nrow(W)
+n <- M
+
+## Spatial precision matrix ----
+I <- diag(x=1, nrow = M)
+D <- diag(rowSums(W))
+D_W <- rowSums(W)
+C <- solve(D) %*% W
+Omega_S <- D %*% (I - rho * C)
+# Use our user-made function to get the required
+# sparse elements from C
+# creates a list
+C_for_stan <- prep4MCAR(W, type = "pcar")
+
+## Univariate marginal variance ----
+variance  <- 1.2
+precision <- 1/1.2
+Omega_A <- precision * Omega_S
+Sigma_A <- solve(Omega_A)
+
+# Generate some fake data ----
+set.seed(80)
+# vector version
+y <- MASS::mvrnorm(1, rep(0,n), Sigma_A)
+y_v <- t(y)
+# matrix version
+y_mat <- matrix(y_v, nrow = M, ncol = 1, byrow = T)
+
+## Check ## ----
+standardMCAR_lpdf(y_v, rep(0,M), as.matrix(Omega_A))
+
+MPCAR_lpdf(y_mat, rho, 
+            as.matrix(precision), 
+            as.matrix(variance), 
+            C_for_stan$C_w, 
+            C_for_stan$C_v, 
+            C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, 
+            C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, D_W, M, 1)
+```
+
 
 # Leroux prior
 
