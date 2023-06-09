@@ -623,7 +623,7 @@ All that is left to do is generate some fake data and ensure that all three func
 
 ```{r eval=TRUE}
 # number of areas
-M <- 100
+M <- 1500
 # number of factors
 K <- 3
 # set the spatial smoothing parameter
@@ -1072,7 +1072,7 @@ functions{
 **
 @return Log probability density
 */
-real MCARt1_lpdf(
+real MLCAR_lpdf(
 	matrix x_mat,				// input pars in matrix form M x K
 	real rho, 					// spatial smoothing parameter
 	matrix Omega_R, 			// Precision matrix for factors
@@ -1102,10 +1102,6 @@ real MCARt1_lpdf(
 			}
 		ldet_C = log1m( rho * C_eigenvalues );
 		real sq_term = sum( A_R .* A_S' );
-		//for(i in 1:M){
-			// equivelant to log(1-rho * lambda[i])
-			//ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
-		//}
 		return -0.5 * ( 
 		M*K*log( 2 * pi() ) 
 		+  ( 2 * M * sum( log_d_Sigma_R_chol ) - K * sum( ldet_C ) ) + sq_term 
@@ -1186,7 +1182,7 @@ ne = Sys.time()-s
 
 # Efficient (or fast)
 s=Sys.time() 
-MCARt1_lpdf(y_mat, rho, Omega_R, Sigma_R, 
+MLCAR_lpdf(y_mat, rho, Omega_R, Sigma_R, 
             C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
             C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
             C_for_stan$C_eigenvalues, M, K)
@@ -1201,6 +1197,59 @@ data.frame(method = c("Standard", "Naive efficient", "Efficient"),
 ```
 
 Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With `M=1500` and `K=3` we find that the fast implementation is around 150 times faster.  
+
+## Univariate approach
+
+Like with the PCAR, we can use the `MLCAR_lpdf` as a univariate Leroux prior.
+
+```{r}
+# number of areas
+M <- 3000
+# set the spatial smoothing parameter
+rho <- 0.4
+
+# use our user-made function to get fully connected grid
+W <- getGRID(M)$W
+M <- nrow(W)
+n <- M
+
+## Spatial precision matrix ----
+I <- diag(1, nrow = M)
+D <- diag(rowSums(W))
+C <- I - D + W
+Omega_S = I - rho * C
+# Use our user-made function to get the required
+# sparse elements from C
+# creates a list
+C_for_stan <- prep4MCAR(W, type = "lcar")
+
+## Scalar precisions ----
+Omega_R <- as.matrix(1)
+Sigma_R <- as.matrix(1)
+
+## Derive full precision matrix ----
+Omega_A <- as.numeric(Omega_R) * Omega_S
+
+# Generate some fake data ----
+set.seed(80)
+# vector version
+y_v <- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
+# matrix version
+y_mat <- matrix(y_v, nrow = M, ncol = 1, byrow = T)
+
+## Check log-likelihoods ## ----------------------------------------------------
+
+# Standard or naive
+standardMCAR_lpdf(y_v, rep(0,M), Omega_A)
+
+# Efficient (or fast)
+MLCAR_lpdf(y_mat, rho, 
+           Omega_R, 
+           Sigma_R, 
+            C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, M, 1)
+```
 
 # References
 
