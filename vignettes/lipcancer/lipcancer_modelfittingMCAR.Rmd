@@ -1,0 +1,207 @@
+---
+title: "Efficient Multivariate Conditional Autoregressive (MCAR) prior in Stan"
+author:
+  name: "By James Hogg - 2023"
+output: 
+  html_document:
+    toc: true
+bibliography: bib.bib
+csl: research-in-number-theory.csl
+editor_options: 
+  chunk_output_type: console
+---
+
+\newcommand{\lb}[1]{\left( #1 \right)}
+\newcommand{\jdist}[2]{\text{#1}\left( #2 \right)}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Load packages ## ------------------------------------------------------------
+library(tidyverse)
+library(sf)
+library(spdep)
+library(mvtnorm)
+library(rstan)
+rstan_options(auto_write = TRUE)
+library(patchwork)
+library(CARBayes)     # A package for fitting CAR models 
+library(CARBayesdata) # A package with the Scottish lip cancer data
+library(igraph)       # check that weight matrices are entirely connected
+library(posterior)
+rm(list = ls())
+
+# Source functions
+source("src/funs.R")
+
+# compile Stan model
+unlink("vignettes/lipcancer/*.rds")
+s_comp <- stan_model(file = "vignettes/lipcancer/efficient.stan")
+sn_comp <- stan_model(file = "vignettes/lipcancer/naive.stan")
+```
+
+# Introduction
+
+This document details an Leroux conditional autoregressive (CAR) models in Stan. Building on previous work in sparse implementations of CAR models in Stan, we show that our approach can give considerable efficiency gains, scaling better for large spatial data sets. 
+
+# The Leroux spatial model
+
+Although CAR models have been used for decades to model the spatial dependence between lattice spatial data, the model proposed by Leroux [@RN366] has gained considerable attention given its nice properties. Suppose we have aggregated disease count data $y_1, y_2, \dots, y_M$ at $M$ locations, and we expect that neighbouring locations will have similar counts. Standard disease mapping assumes a Poisson likelihood of the form:
+
+$$
+y_i \sim \jdist{Poisson}{\jdist{exp}{\beta + \phi_i + \jdist{log}{E_i}}}
+$$
+
+where $\beta$ is the overall intercept, $\phi_i$ are the spatial random effects which follow a Leroux prior (discussed below) and $E_i$ gives the expected counts which are included to account for differences in expected values or exposures in the small areas. 
+
+Using the Leroux CAR prior for $\boldsymbol{\phi} = \lb{ \phi_1, \dots, \phi_M }$, results in a multivariate Gaussian distribution of the form:
+
+$$
+\boldsymbol{\phi} \sim \jdist{MVN}{\boldsymbol{0}, \boldsymbol{\Omega}^{-1}}
+$$
+
+where $\boldsymbol{\Omega} = \frac{1}{\sigma^2}[\rho\lb{ \boldsymbol{D} - \boldsymbol{W} } + (1-\rho)]$ is the precision matrix of size $M \times M$. With some simplifications,
+
+$$
+\begin{align}
+\boldsymbol{\Omega} &= \frac{1}{\sigma^2} \left[ \rho\lb{ \boldsymbol{D} - \boldsymbol{W} } + (1-\rho) \right]
+\\
+\boldsymbol{\Omega} &= \frac{1}{\sigma^2} \left[ \boldsymbol{I} - \rho \boldsymbol{C} \right]
+\end{align}
+$$
+where $\boldsymbol{C} = \boldsymbol{I} - \boldsymbol{D} + \boldsymbol{W}$. Assume the following:
+
+- $\boldsymbol{D}$: an $M \times M$ diagonal matrix with the number of neighbors for each area
+- $\boldsymbol{I}$: an $M \times M$ identity matrix
+- $\rho$: a spatial autocorrelation parameter that controls the level of spatial dependence ($\rho = 0$ implies spatial independence and $\rho = 1$ collapses to an intrinsic CAR (ICAR) prior which has already been implemented in `Stan`)
+- $\boldsymbol{W}$: the $M \times M$ binary contiguity adjacency matrix. $W_{ij} = 1$ if and only if area $i$ is a neighbor of area $j$. All other entries of $\boldsymbol{W}$ are $0$. 
+
+## A poisson specification
+
+## Example: Scottist lip cancer data
+
+Like many vignettes on disease mapping, to demonstrate this approach we’ll use the Scottish lip cancer data example. This data set includes observed lip cancer case counts at 56 spatial units in Scotland, with an expected number of cases to be used as an offset. The model structure is identical to the Poisson model outlined above.
+
+```{r eval=TRUE}
+# Load data
+data(lipdata)
+data(lipdbf)
+data(lipshp)
+lipdbf$dbf <- lipdbf$dbf[ ,c(2,1)]
+data <- st_as_sf(combine.data.shapefile(data=lipdata, shp=lipshp, dbf=lipdbf))
+
+# create weight matrices
+W <- nb2mat(poly2nb(data), zero.policy = FALSE, style = "B")
+
+# Map the data
+data %>% 
+  ggplot()+
+  theme_void()+
+  geom_sf(aes(fill = observed/expected))
+```
+
+## Using `CARBayes`
+
+First, we'll fit the Poisson Leroux model using `CARBayes`. Along with this vignette we have supplied a set of functions that we access by calling the list `myfuns`. These user-written functions extend the `S.CARleroux` function from `CARBayes` to allow for 4 chains. In an attempt to harbor a fair comparison, we've allowed the component-wise sampler implemented in `CARBayes` to use three times the warmup as burnin.  
+
+```{r}
+m_s <- Sys.time()
+cb_fit <- myfuns$fitLeroux_mc(observed ~ offset(log(expected)), 
+                              data = data, family = "poisson",
+                              burnin = 6000, n.sample = 7000, 
+                              thin = 1, W = W,
+                              n.chains = 4) # n.chains not native to CARBayes
+(cb_rt <- as.numeric(Sys.time() - m_s, units = "mins"))
+
+# summarise draws
+cb_summ <- myfuns$summaryLeroux_mc(cb_fit) %>% 
+  mutate(bess_pm = ess_bulk/cb_rt,
+         tess_pm = ess_tail/cb_rt)
+```
+
+## Naive implementation using `rstan`
+
+```{r}
+# data list
+C_for_stan <- myfuns$prep4MCAR(W, type = "lcar")
+d_stan <- list(M = nrow(data), y = data$observed,
+               E = data$expected, C = C_for_stan$C)
+
+# fit the Leroux model
+m_s <- Sys.time()
+sn_fit <- sampling(object = sn_comp, 
+                  data = d_stan, 
+                  chains = 4, iter = 3000, warmup = 2000,
+                  cores = 1, refresh = 0)
+(sn_rt <- as.numeric(Sys.time() - m_s, units = "mins"))
+
+# summarize results
+sn_its <- rstan::extract(sn_fit)
+sn_summ <- summarise_draws(sn_fit) %>% 
+  mutate(bess_pm = ess_bulk/sn_rt,
+         tess_pm = ess_tail/sn_rt)
+```
+
+## Efficient implementation using `rstan`
+
+```{r}
+# data list
+C_for_stan <- myfuns$prep4MCAR(W, type = "lcar")
+C_for_stan$C <- NULL
+d_stan <- list(M = nrow(data), y = data$observed,
+               E = data$expected)
+d_stan <- c(d_stan, C_for_stan)
+
+# fit the Poisson Leroux model
+m_s <- Sys.time()
+s_fit <- sampling(object = s_comp, 
+                  data = d_stan, 
+                  pars = "phi_mat", include = FALSE,
+                  chains = 4, iter = 3000, warmup = 2000,
+                  cores = 1, refresh = 0)
+(s_rt <- as.numeric(Sys.time() - m_s, units = "mins"))
+
+# summarize results
+s_its <- rstan::extract(s_fit)
+s_summ <- summarise_draws(s_fit) %>% 
+  mutate(bess_pm = ess_bulk/s_rt,
+         tess_pm = ess_tail/s_rt)
+```
+
+We'll compare the results for the hyper parameters.
+
+```{r}
+rbind(s_summ %>% 
+  filter(str_detect(variable, "rho|bbeta|tau2")) %>% 
+  mutate(variable = paste0(variable, " (stan)")),
+cb_summ %>% 
+  filter(str_detect(variable, "rho|beta|tau2")) %>% 
+  mutate(variable = paste0(variable, " (cb)")),
+sn_summ %>% 
+  filter(str_detect(variable, "rho|beta|tau2")) %>% 
+  mutate(variable = paste0(variable, " (stan naive)"))) %>% 
+arrange(variable)
+```
+
+We'll compare the results for the first 10 elements of $\phi$.
+
+```{r}
+rbind(s_summ %>% 
+  filter(str_detect(variable, "phi\\[")) %>% 
+  slice(1:9) %>% 
+  mutate(variable = paste0(variable, " (stan)")),
+sn_summ %>% 
+  filter(str_detect(variable, "phi\\[")) %>% 
+  slice(1:9) %>% 
+  mutate(variable = paste0(variable, " (stan naive)")),
+cb_summ %>% 
+  filter(str_detect(variable, "phi\\[")) %>% 
+  slice(1:9) %>% 
+  mutate(variable = paste0(variable, " (cb)"))) %>% 
+arrange(variable)
+```
+
+
+# References
+
+<div id="refs"></div>
