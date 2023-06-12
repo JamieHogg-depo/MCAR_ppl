@@ -59,13 +59,11 @@ data{
 	// sparse components of C matrix
 	vector[M] C_eigenvalues;
 	int nC_w;
-	int nDiag;
-	int nODiag;
 	vector[nC_w] C_w; 
 	int C_v[nC_w]; 
 	int C_u[M+1]; 
-	int offD_id_C_w[nODiag];		// indexes for off diagonal terms
-	int D_id_C_w[nDiag]; 				// indexes for diagonal terms - length M
+	int offD_id_C_w[nC_w - M];		// indexes for off diagonal terms
+	int D_id_C_w[M]; 				// indexes for diagonal terms - length M
 	matrix[1,1] precision;
 	matrix[1,1] inverse_precision;
 }

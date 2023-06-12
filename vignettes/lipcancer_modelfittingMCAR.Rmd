@@ -68,23 +68,28 @@ prep4MCAR <- function(W, type = "pcar"){
     I <- Matrix::Diagonal(nrow(W))
     C <- I - D + W
     
+    # get indices for diagonals
+    jt <- rstan::extract_sparse_parts(W + 5*I)
+    D_id_C_w <- which(jt$w == 5)
+    offD_id_C_w <- which(jt$w == 1)
+    
     # Eigenvalues of C
     C_eigenvalues <- eigen(C)$values
     
     # get the CRS representation of C
-    crs <- rstan::extract_sparse_parts(C)
+      # add an extra 1 to all diagonals to ensure they
+      # captured by `extract_sparse_parts
+    crs <- rstan::extract_sparse_parts(C + I)
     nC_w <- length(crs$w)
     
-    # get indexes 
-    D_id_C_w = which(crs$w != 1)
-    offD_id_C_w = which(crs$w == 1)
+    # Remove 1 from the diagonals 
+    crs$w[D_id_C_w] <- crs$w[D_id_C_w] - 1
     
     # prepare output list
     return(
-      list(C_eigenvalues = C_eigenvalues, 
+      list(C = as.matrix(C),
+           C_eigenvalues = C_eigenvalues, 
            nC_w = nC_w,
-           nDiag = length(D_id_C_w),
-           nODiag = length(offD_id_C_w),
            C_w = crs$w,
            C_v = crs$v,
            C_u = crs$u,
@@ -132,7 +137,7 @@ First, we'll fit the Poisson Leroux model using CARBayes.
 # fit model
 m_s <- Sys.time()
 cb_fit <- S.CARleroux(observed ~ offset(log(expected)), data = data, family = "poisson",
-                      burnin = 5000, n.sample = 20000, thin = 10, W = W)
+                      burnin = 8000, n.sample = 12000, thin = 10, W = W)
 (rtmins_cb <- as.numeric(Sys.time() - m_s, units = "mins"))
 
 # get summary measures
@@ -166,7 +171,8 @@ d_stan <- c(d_stan, C_for_stan)
 m_s <- Sys.time()
 stan_fit <- sampling(object = comp, 
                   data = d_stan, 
-                  chains = 2, iter = 2000, warmup = 1000,
+                  pars = "theta_mat", include = FALSE,
+                  chains = 4, iter = 3000, warmup = 2000,
                   cores = 2) #, refresh = 0)
 (rtmins_stan <- as.numeric(Sys.time() - m_s, units = "mins"))
   # Summarise
