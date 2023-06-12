@@ -1,5 +1,5 @@
 ---
-title: "Efficient Multivariate Conditional Autoregressive (MCAR) prior in Stan"
+title: "Efficient Leroux model in Stan"
 author:
   name: "By James Hogg - 2023"
 output: 
@@ -32,17 +32,12 @@ library(posterior)
 rm(list = ls())
 
 # Source functions
-source("src/funs.R")
-
-# compile Stan model
-unlink("vignettes/lipcancer/*.rds")
-s_comp <- stan_model(file = "vignettes/lipcancer/efficient.stan")
-sn_comp <- stan_model(file = "vignettes/lipcancer/naive.stan")
+source("../../src/funs.R")
 ```
 
 # Introduction
 
-This document details an Leroux conditional autoregressive (CAR) models in Stan. Building on previous work in sparse implementations of CAR models in Stan, we show that our approach can give considerable efficiency gains, scaling better for large spatial data sets. 
+This document details the Leroux conditional autoregressive (CAR) models in Stan. Building on previous work in sparse implementations of CAR models in Stan, we show that our approach can give considerable efficiency gains, scaling better for large spatial data sets. 
 
 # The Leroux spatial model
 
@@ -78,11 +73,19 @@ where $\boldsymbol{C} = \boldsymbol{I} - \boldsymbol{D} + \boldsymbol{W}$. Assum
 
 ## A poisson specification
 
+```{r, compile_chunk, echo = FALSE}
+# compile Stan model
+unlink("*.rds")
+s_comp <- stan_model(file = "efficient.stan")
+sn_comp <- stan_model(file = "naive.stan")
+```
+
+
 ## Example: Scottist lip cancer data
 
 Like many vignettes on disease mapping, to demonstrate this approach we’ll use the Scottish lip cancer data example. This data set includes observed lip cancer case counts at 56 spatial units in Scotland, with an expected number of cases to be used as an offset. The model structure is identical to the Poisson model outlined above.
 
-```{r eval=TRUE}
+```{r}
 # Load data
 data(lipdata)
 data(lipdbf)
@@ -108,7 +111,7 @@ First, we'll fit the Poisson Leroux model using `CARBayes`. Along with this vign
 m_s <- Sys.time()
 cb_fit <- myfuns$fitLeroux_mc(observed ~ offset(log(expected)), 
                               data = data, family = "poisson",
-                              burnin = 6000, n.sample = 7000, 
+                              burnin = 12000, n.sample = 14000, 
                               thin = 1, W = W,
                               n.chains = 4) # n.chains not native to CARBayes
 (cb_rt <- as.numeric(Sys.time() - m_s, units = "mins"))
@@ -121,7 +124,7 @@ cb_summ <- myfuns$summaryLeroux_mc(cb_fit) %>%
 
 ## Naive implementation using `rstan`
 
-```{r}
+```{r, naive_fit}
 # data list
 C_for_stan <- myfuns$prep4MCAR(W, type = "lcar")
 d_stan <- list(M = nrow(data), y = data$observed,
@@ -131,7 +134,7 @@ d_stan <- list(M = nrow(data), y = data$observed,
 m_s <- Sys.time()
 sn_fit <- sampling(object = sn_comp, 
                   data = d_stan, 
-                  chains = 4, iter = 3000, warmup = 2000,
+                  chains = 4, iter = 6000, warmup = 4000,
                   cores = 1, refresh = 0)
 (sn_rt <- as.numeric(Sys.time() - m_s, units = "mins"))
 
@@ -144,7 +147,7 @@ sn_summ <- summarise_draws(sn_fit) %>%
 
 ## Efficient implementation using `rstan`
 
-```{r}
+```{r, efficient_fit}
 # data list
 C_for_stan <- myfuns$prep4MCAR(W, type = "lcar")
 C_for_stan$C <- NULL
@@ -157,7 +160,7 @@ m_s <- Sys.time()
 s_fit <- sampling(object = s_comp, 
                   data = d_stan, 
                   pars = "phi_mat", include = FALSE,
-                  chains = 4, iter = 3000, warmup = 2000,
+                  chains = 4, iter = 6000, warmup = 4000,
                   cores = 1, refresh = 0)
 (s_rt <- as.numeric(Sys.time() - m_s, units = "mins"))
 
@@ -167,6 +170,10 @@ s_summ <- summarise_draws(s_fit) %>%
   mutate(bess_pm = ess_bulk/s_rt,
          tess_pm = ess_tail/s_rt)
 ```
+
+It took `r round(cb_rt, 2)`, `r round(sn_rt, 2)` and `r round(s_rt, 2)` minutes for the `CARBayes`, naive stan and efficient stan models, respectively. 
+
+# Comparison
 
 We'll compare the results for the hyper parameters.
 
@@ -180,7 +187,24 @@ cb_summ %>%
 sn_summ %>% 
   filter(str_detect(variable, "rho|beta|tau2")) %>% 
   mutate(variable = paste0(variable, " (stan naive)"))) %>% 
-arrange(variable)
+arrange(variable) %>% 
+dplyr::select(variable, median, sd, rhat, ess_bulk, bess_pm)
+```
+
+```{r, echo = FALSE}
+rbind(s_summ %>% 
+  filter(str_detect(variable, "rho|bbeta|tau2")) %>% 
+  mutate(sampler = "stan"),
+cb_summ %>% 
+  filter(str_detect(variable, "rho|beta|tau2")) %>% 
+  mutate(sampler = "cb"),
+sn_summ %>% 
+  filter(str_detect(variable, "rho|beta|tau2")) %>% 
+  mutate(sampler = "naive stan")) %>% 
+ggplot(aes(x = median, xmin = q5, xmax = q95,
+           y = variable, col = sampler))+
+  geom_errorbarh()+
+  geom_point()
 ```
 
 We'll compare the results for the first 10 elements of $\phi$.
@@ -198,9 +222,9 @@ cb_summ %>%
   filter(str_detect(variable, "phi\\[")) %>% 
   slice(1:9) %>% 
   mutate(variable = paste0(variable, " (cb)"))) %>% 
-arrange(variable)
+arrange(variable) %>% 
+dplyr::select(variable, median, sd, rhat, ess_bulk, bess_pm)
 ```
-
 
 # References
 

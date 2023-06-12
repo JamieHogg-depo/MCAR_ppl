@@ -113,7 +113,7 @@ myfuns$fitLeroux_mc <- function(formula,
                                   n.sample = n.sample, 
                                   verbose = TRUE,
                                   prior.tau2 = c(1,0.5),
-                                  prior.var.beta = 100), 
+                                  prior.var.beta = 1), 
                       simplify = F)
   
   # get variable names

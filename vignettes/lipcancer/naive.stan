@@ -19,7 +19,7 @@ model{
 	
 	// priors
 	tau2 ~ inv_gamma( 1, 0.5);
-	bbeta ~ normal( 0, 10 );
+	bbeta ~ std_normal( );
 	rho ~ uniform( 0, 1);
 	
 	// unit Leroux CAR prior
