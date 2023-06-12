@@ -215,8 +215,8 @@ Now we visualize the five factors in separate grids.
 Compile the models.
 
 ```{r}
-comp_n <- stan_model(file = "vignettes/stan/MPCAR_naive.stan")
-comp_e <- stan_model(file = "vignettes/stan/MPCAR.stan")
+comp_n <- stan_model(file = "stan/MPCAR_naive.stan")
+comp_e <- stan_model(file = "stan/MPCAR.stan")
 ```
 
 Collect the two sets of data into their respective lists. 
@@ -424,7 +424,7 @@ saveRDS(list(spat_obj = spat_obj,
              theta_mat = theta_mat, 
              Sigma_R = Sigma_R, 
              Cor_R = Cor_R), 
-        paste0("data/data_m", M, "_k", K, "_rho", str_remove(rho, "\\."), ".rds"))
+        paste0("../data/data_m", M, "_k", K, "_rho", str_remove(rho, "\\."), ".rds"))
 
 message("Finished ", i)
 }
@@ -500,12 +500,14 @@ for(i in 1:nrow(grid)){
   message("Finished ", i)
 }
 
-saveRDS(grid, paste0("data/completed_grid.rds"))
+saveRDS(grid, paste0("../data/completed_grid.rds"))
 ```
 
 Fitting our efficient implementation to all combinations of `M` and `rho`, we can visualize the accuracy and sampling efficiency. To enable a fair comparison, we'll compare the sampling efficiency for `rho`. 
 
 ```{r}
+grid <- readRDS(paste0("../data/completed_grid.rds"))
+
 # run time
 (grid %>% 
   ggplot(aes(y = rtmins, x = M))+
