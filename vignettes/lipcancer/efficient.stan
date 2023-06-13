@@ -51,6 +51,7 @@ data{
 	int<lower=1> M; 				// number of areas
 	int y[M];
 	vector[M] E;
+	matrix[M, 2] X;
 	// sparse components of C matrix
 	vector[M] C_eigenvalues;
 	int nC_w;
@@ -62,23 +63,25 @@ data{
 }
 parameters{
 	// precision and sigma must be matrices
-	vector<lower=0>[1] tau2;
+	vector<lower=0>[1] tau2_v; // marginal variance
 	real<lower=0,upper=1> rho;
-	real bbeta;
+	vector[2] bbeta;
 	vector[M] phi;
 }
 transformed parameters{
 	// To generalize the MLCAR we must use matrices
 	matrix[M,1] phi_mat = to_matrix( phi, M, 1);
-	matrix[1,1] Omega_R = to_matrix( 1.0 ./ tau2, 1, 1 );
-	matrix[1,1] Sigma_R = to_matrix( tau2, 1, 1 );
+	// precision is inverse of tau2_v
+	matrix[1,1] Omega_R = to_matrix( 1.0 ./ tau2_v, 1, 1 ); 
+	// `Sigma_R` is covariance matrix
+	matrix[1,1] Sigma_R = to_matrix( tau2_v, 1, 1 );
 }
 model{
 	// likelihood model
-	y ~ poisson_log(log(E) + bbeta + phi);
+	y ~ poisson_log(log(E) + X * bbeta + phi);
 	
 	// priors
-	tau2[1] ~ inv_gamma( 1, 0.5);
+	tau2_v[1] ~ inv_gamma( 1, 0.5); // variance
 	bbeta ~ std_normal();
 	rho ~ uniform( 0, 1);
 	
@@ -86,5 +89,8 @@ model{
 	target += MLCAR_lpdf( phi_mat | rho, Omega_R, Sigma_R,
 	C_w, C_v, C_u,     
 	offD_id_C_w, D_id_C_w, C_eigenvalues, M, 1);
+}
+generated quantities{
+real tau2 = tau2_v[1];
 }
 

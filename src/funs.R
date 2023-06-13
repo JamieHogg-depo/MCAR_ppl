@@ -111,9 +111,9 @@ myfuns$fitLeroux_mc <- function(formula,
                                   thin = thin, 
                                   burnin = burnin, 
                                   n.sample = n.sample, 
-                                  verbose = TRUE,
+                                  verbose = FALSE,
                                   prior.tau2 = c(1,0.5),
-                                  prior.var.beta = 1), 
+                                  prior.var.beta = c(1,1)), 
                       simplify = F)
   
   # get variable names
