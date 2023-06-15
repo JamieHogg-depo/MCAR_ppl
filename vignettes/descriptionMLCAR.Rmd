@@ -1,0 +1,602 @@
+---
+title: "Efficient Multivariate Leroux Conditional Autoregressive (MCAR) prior in Stan"
+author:
+  name: "By James Hogg - 2023"
+output: 
+  html_document:
+    toc: true
+bibliography: bib.bib
+csl: research-in-number-theory.csl
+editor_options: 
+  chunk_output_type: console
+---
+
+\newcommand{\lb}[1]{\left( #1 \right)}
+\newcommand{\jdist}[2]{\text{#1}\left( #2 \right)}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Load packages ## ------------------------------------------------------------
+
+library(tidyverse)
+library(sf)
+library(spdep)
+library(mvtnorm)
+library(rstan)
+rm(list = ls())
+
+## Functions ## ----------------------------------------------------------------
+
+#' @title getGRID
+#' @description creates a sf object that is a grid of specified size
+#' @param M target number of areas
+#' @returns A list of two objects: sf is a data.frame/sf object with the geometry for the grid, W is the binary weight matrix based on queen contiguity
+
+getGRID <- function(M){
+  
+  out <- list()
+  
+  # provides the height and length dimensions for the grid that are as close to the specified M as possible
+  dims <- c(floor(sqrt(M)), floor(M/floor(sqrt(M))))
+  
+  df <- data.frame(lon = c(0, dims[1]), 
+                   lat = c(0, dims[2])) %>% 
+    st_as_sf(coords = c("lon", "lat")) %>% 
+    st_bbox() %>% 
+    st_as_sfc()
+  
+  out$sf <- sf::st_make_grid(df, square = T, cellsize = c(1, 1)) %>% 
+    sf::st_sf() %>% 
+    dplyr::mutate(id = row_number())
+  
+  out$W <- nb2mat(poly2nb(out$sf, queen = T), style="B") #binary
+  #message(paste0("Created an sf object with ", prod(dims), " rows"))
+  return(out)
+}
+
+#' @param input stan summary (summary(fit)$summary)
+getSubsetSummary <- function(input, regex){
+  as.data.frame(input) %>% 
+    rownames_to_column("parameter") %>% 
+    relocate(parameter) %>% 
+    filter(str_detect(parameter, regex))
+}
+
+#' @param W binary contiguity matrix (must be complete)
+prep4MLCAR <- function(W){    
+    # create sparse matrices
+    W <- Matrix::Matrix(W, sparse = TRUE)
+    D <- Matrix::Diagonal( x = Matrix::rowSums(W) )
+    I <- Matrix::Diagonal(nrow(W))
+    C <- I - D + W
+    # C and W only differ by the diagonal values
+    # C has -1 on off diagonals
+    
+    # ISSUE: Diagonal element of C is zero if area has only one neighbor
+    
+    # get indices for diagonals
+    jt <- rstan::extract_sparse_parts(W + 5*I) # 5 is arbritary
+    # 5's will only be on the diagonals
+    D_id_C_w <- which(jt$w == 5) 
+    # any values that are not 5 are off diagonals
+    offD_id_C_w <- which(jt$w == 1)
+    
+    # Eigenvalues of C
+    C_eigenvalues <- eigen(C)$values
+    
+    # get the CRS representation of C
+    # add an extra 1 to all diagonals to ensure they
+    # are captured by `extract_sparse_parts`
+    crs <- rstan::extract_sparse_parts(C + I)
+    nC_w <- length(crs$w)
+    
+    # Remove 1 from the diagonals 
+    crs$w[D_id_C_w] <- crs$w[D_id_C_w] - 1
+    
+    # prepare output list
+    return(
+      list(C = as.matrix(C),
+           C_eigenvalues = C_eigenvalues, 
+           nC_w = nC_w,
+           C_w = crs$w,
+           C_v = crs$v,
+           C_u = crs$u,
+           D_id_C_w = D_id_C_w,
+           offD_id_C_w = offD_id_C_w)
+    )
+}
+
+```
+
+# Introduction
+
+Multivariate conditional autoregressive (MCAR) priors are one way of simultaneously accomodating spatial structure and dependence between several factors [@RN610].
+
+# The MCAR
+
+The MCAR model is generally specified as a $MK$-dimensional multivariate normal distribution with a zero mean vector, $\mathbf{0}$, and precision matrix, $\mathbf{\Omega}^A$. 
+
+$$
+\mathbf{y} \sim \jdist{MVN}{\mathbf{0}, \left( \mathbf{\Omega}^A \right)^{-1}}
+$$
+
+
+The simpliest form of the MCAR uses the following precision matrix 
+
+$$
+\mathbf{\Omega}^A = \mathbf{\Omega}^S \bigotimes \mathbf{\Omega}^R,
+$$
+where $\bigotimes$ is the Kronecker product, $\mathbf{\Omega}^S$ is the spatial matrix of size $M \times M$ and $\mathbf{\Omega}^R$ is the between-disease precision matrix of size $K \times K$. To use the MCAR prior in practice we require the calculation of the following log-likelihood. 
+
+$$
+-0.5 \left[ n \text{log}\left( 2\pi \right) - \text{log}\left( \left| \mathbf{\Omega}^A \right| \right) + (\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y}) \right]
+$$
+
+To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$. Note that when $\rho = 1$, $\left| \mathbf{\Omega}^A \right| = 0$; the result is the multivariate extension of the ICAR prior with a simpler log-likelihood of $-0.5 \left[ n \text{log}\left( 2\pi \right) + (\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y}) \right]$. 
+
+# Leroux prior
+
+The Leroux model proposed by [@RN366] was extended to the multivariate setting by [@RN546]. Note that a similar setup was used by [@RN574]. Under the Leroux setup, the spatial matrix, $\mathbf{\Omega}^S$, is 
+
+$$
+\begin{align}
+\mathbf{\Omega}^S &= \mathbf{L} - \rho \mathbf{W} = \mathbf{I} - \rho \mathbf{C}
+\\
+\mathbf{C} &= \mathbf{I} - \mathbf{D} + \mathbf{W},
+\end{align}
+$$
+where $\mathbf{L}$ is a diagonal matrix with elements, $1-\rho + \rho D_{11}, \dots, 1-\rho + \rho D_{MM}$. To use the MCAR prior in practice we require the calculation of the following log-likelihood. 
+
+$$
+-0.5 \left[ n \text{log}\left( 2\pi \right) - \text{log}\left( \left| \mathbf{\Omega}^A \right| \right) + (\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y}) \right]
+$$
+
+To develop an efficient manner to derive the log-likelihood, we focus on methods to compute two core components; the determinant of the precision matrix and the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$.
+
+## Determinant
+
+Using well known algebra rules one can show that,
+
+$$
+\begin{align}
+    \jdist{log}{ \left| \mathbf{\Omega}^A \right| } &= \jdist{log}{ \left| \mathbf{\Omega}^S \bigotimes \mathbf{\Omega}^R \right| }
+    \\
+    &= \jdist{log}{ \left| \mathbf{\Omega}^S \right|^K \left| \mathbf{\Omega}^R \right|^M }
+    \\
+    &= K \jdist{log}{ \left| \mathbf{\Omega}^S \right| } + M \jdist{log}{ \left| \mathbf{\Omega}^R \right| }. 
+\end{align}
+$$
+
+Following work by Donegan [@Donegan2021] we can derive $\jdist{log}{ \left| \mathbf{\Omega}^S \right|^K }$ efficiently via,
+
+$$
+K \sum_{i=1}^M \jdist{log}{ 1 - \rho \lambda_i },
+$$
+where $\lambda_i$ is the $i$th eigenvalue. Consider the following example.  
+
+```{r}
+M <- 100 # set number of areas
+rho <- 0.95 # fix rho
+W <- getGRID(M)$W # generate grid with binary weight matrix
+M <- nrow(W) # reset number of areas
+
+# Spatial precision matrix
+I <- diag(x=1, nrow = M)
+D <- diag(rowSums(W))
+C <- I - D + W
+Omega_S = I - rho * C
+
+# Eigenvalues
+lambda <- eigen(C)$values
+
+# check identity
+sum(log(1-rho*lambda))
+determinant(Omega_S, logarithm = TRUE)$modulus
+```
+
+
+Further linear algebra rules can be used to show that $\left| \mathbf{\Omega}^R \right|$ is equal to the product of the diagonal entries of the lower Cholesky of $\mathbf{\sum}^R$ where $\mathbf{\sum}^R = \left( \mathbf{\Omega}^R \right)^{-1}$ is the covariance matrix characterizing the dependence between $K$ risk factors. Consider the following example,
+
+```{r}
+# define an arbitrary precision matrix
+Prec <- matrix(c(1.2, 0.7, 1,   1,
+                    0.7, 3,   1,   1.1,
+                    1,   1,   2,   0.8,
+                    1,   1.1, 0.8, 0.3), byrow = T, ncol = 4)
+Prec <- Prec %*% t(Prec) # ensures positive definite
+
+# get covariance matrix
+Cov <- solve(Prec)
+
+# get diagonal entries of lower cholesky
+Cov_chol_d = diag(t(chol(Cov)))
+
+# check identity
+-2*sum(log(Cov_chol_d))
+determinant(Prec, logarithm = T)$modulus
+```
+
+Conveniently, standard practice is to place a prior on the lower Cholesky of the covariance matrix rather than the precision matrix directly. Thus, this identity allows us to derive the correct determinant without deriving the precision first. 
+
+## Squared term
+
+It is important to derive an efficient manner to calculate the squared term, $(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y})$. The Kronecker product, and left and right multiplications involved in this component requires $3M^2K^2$ scalar multiplications.
+
+The approach we take is to reformat the multivariate normal as the matrix normal (MN) distribution. First we restructure the vector, $\mathbf{y}$, into a matrix, $\mathbf{Y}$, of size $K \times M$ by columns.  
+
+Generally the MN is written as 
+
+$$
+\mathbf{Y} \sim \jdist{MN}{\mathbf{M}, \underbrace{\mathbf{U}}_{K \times K}, \underbrace{\mathbf{V}}_{M\times M} },
+$$
+where $\mathbf{U}$ and $\mathbf{V}$ are the among row and among column covariance matrices, respectively. The MN distribution is equivalent to the normal multivariate normal via,
+
+$$
+\mathbf{y} \sim \jdist{MVN}{ \jdist{vec}{ \mathbf{M} }, \mathbf{V} \bigotimes \mathbf{U} },
+$$
+
+where $\text{vec}(\mathbf{Y})$ is the vectorization function which stacks the columns of $\mathbf{Y}$ into a vector.  
+Continuing with this setup, the squared term of the matrix normal distribution is given by,
+
+$$
+\jdist{tr}{ \mathbf{V}^{-1} \lb{ \mathbf{Y} - \mathbf{M} }^T \mathbf{U}^{-1} \lb{ \mathbf{Y} - \mathbf{M} } }
+$$
+
+Reverting back to the MCAR, let $\mathbf{M}$ be a matrix of zeros. Finally, we can replace the general notation as follows,
+
+$$
+\begin{align}
+  \mathbf{V} &= \mathbf{\sum}^S
+  \\
+  \mathbf{U} &= \mathbf{\sum}^R
+\end{align}
+$$
+
+which allows the squared term to be restated as,
+
+$$
+\begin{align}
+\underbrace{\mathbf{A}^R}_{K \times M} &= \mathbf{\Omega}^R \mathbf{Y}
+\\
+\underbrace{\mathbf{A}^S}_{M \times K} &= \mathbf{\Omega}^S \mathbf{Y}^T
+\\
+(\mathbf{y})' \mathbf{\Omega}^A (\mathbf{y}) &= \jdist{tr}{ \mathbf{A}^S \mathbf{A}^R }
+\end{align}
+$$
+
+Consider the following example,
+
+```{r long-chunk2}
+M <- 1000; K <- 3
+W <- getGRID(M)$W
+M <- nrow(W)
+n <- M*K
+
+# Spatial precision matrix
+I <- diag(x=1, nrow = M)
+D <- diag(rowSums(W))
+C <- I - D + W
+rho <- 0.4
+Omega_S = I - rho * C
+
+# Risk factor matrices
+Omega_R <- matrix(c(1.2, 0.7, 1,
+                    0.7, 3,   1,
+                    1,   1,   2), byrow = T, ncol = K)
+Omega_R <- Omega_R %*% t(Omega_R)
+
+# FULL mvn matrix
+Omega_A <- kronecker(Omega_S, Omega_R)
+
+# Get random effects
+set.seed(80)
+y_v <- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
+y <- t(y_v)
+# create K x M matrix by columns
+Y <- matrix(y_v, nrow = K, ncol = M)
+# create M x K matrix by rows
+Y2 <- matrix(y_v, nrow = M, ncol = K, byrow = T)
+
+# Y and Y2 are equivalent
+identical(Y, t(Y2))
+
+# Check calculation ------------------------------------------------------------
+
+# Standard squared term
+s=Sys.time()
+(t(y) %*% kronecker(Omega_S, Omega_R) %*% y) # v1
+st <- Sys.time()-s
+
+# using K x M matrix
+A_S <- Omega_S %*% t(Y); A_R <- Omega_R %*% Y
+psych::tr(A_S %*% A_R)
+
+# using M x K matrix
+s=Sys.time()
+A_S <- Omega_S %*% Y2; A_R <- Omega_R %*% t(Y2)
+psych::tr(A_S %*% A_R); km2 <- Sys.time()-s
+```
+
+Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took `r round(as.numeric(st, units = "secs"), 2)` seconds, while ours took `r round(as.numeric(km2, units = "secs"), 2)` seconds. Unlike the standard approach which requires $3M^2K^2$ scalar multiplications, our approach only requires $MK(M + 2K)$.   
+
+An alternative to deriving the trace of the matrix multiplication of $\mathbf{A}^S$ and $\mathbf{A}^R$ is to sum all the elements of the componentwise multiplication of $\mathbf{A}^R$ and $\lb{ \mathbf{A}^S }^T$, which only involves $MK(M + K + 1)$ scalar multiplications. 
+
+```{r}
+# Standard squared term
+(t(y) %*% kronecker(Omega_S, Omega_R) %*% y) # v1
+
+# trace method
+s=Sys.time()
+A_S <- Omega_S %*% Y2; A_R <- Omega_R %*% t(Y2)
+psych::tr(A_S %*% A_R); tm <- Sys.time()-s
+
+# componentwise method
+s=Sys.time()
+A_S <- Omega_S %*% Y2; A_R <- Omega_R %*% t(Y2)
+sum(A_R * t(A_S)); cm <- Sys.time()-s
+```
+
+As expected, we get the same value but a little faster! The trace method took `r round(as.numeric(tm, units = "secs"), 2)` seconds, while the componentwise method only took `r round(as.numeric(cm, units = "secs"), 2)` seconds. 
+
+## Stan implementations
+
+To convince the reader of the validity of our efficient Stan implementation we use the `expose_stan_functions` function from `rstan` to run the functions directly inside `R`. In the following code chunks I define both the naive (or standard) approach and our efficient approach for fitting the MCAR in Stan. 
+Our efficient implementation can be found below
+
+```{r}
+# Standard implementation
+standard_model <- "
+functions{
+real standardMCAR_lpdf(
+	vector y_vec,
+	vector zero,
+	matrix Omega_A){
+	return multi_normal_prec_lpdf( y_vec | zero, Omega_A );
+	}
+}
+
+"
+
+# naive efficient implementation
+naiveeff_model <- "
+functions{
+/**
+* Log probability density of the multivariate conditional autoregressive (MCAR) model - type1
+* @param x_mat input pars in matrix form (M x K)
+* @param mu Mean vector
+* @param tau Scale parameter - sigma^(-2)
+* @param rho Spatial dependence parameter
+* @param C matrix that represents spatial neighborhood 
+* @param C_eigenvalues eigenvalues of C
+* @param M number of areas
+* @param K number of factors
+**
+@return Log probability density
+*/
+real MCARnet1_lpdf(
+	matrix x_mat,				// input pars in matrix form M x K
+	real rho, 					// spatial smoothing parameter
+	matrix Omega_R, 			// Precision matrix for factors
+	matrix Sigma_R, 			// Covariance matrix for factors
+	matrix Omega_S, 			// Precision matrix for areas (M x M)
+	matrix C, 					// C matrix (M x M)
+	vector C_eigenvalues,		// eigenvalues for C
+	int M, 						// Number of areas
+	int K) { 					// Number of factors
+		vector[M] ldet_C;
+		vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
+		matrix[K, M] A_R = Omega_R * x_mat';
+		matrix[M, K] A_S = Omega_S * x_mat;
+		real sq_term = sum( A_R .* A_S' );
+		for(i in 1:M){
+			// equivelant to log(1-rho * lambda[i])
+			ldet_C[i] = log1m( rho * C_eigenvalues[i] ); 
+		}
+		return -0.5 * ( 
+		M*K*log( 2 * pi() ) 
+		+  ( 2 * M * sum( log_d_Sigma_R_chol ) - K * sum( ldet_C ) ) + sq_term 
+		);
+}
+}
+
+"
+
+# Fast implementation
+eff_model <- "
+functions{
+/**
+* Log probability density of the multivariate conditional autoregressive (MCAR) model - type1
+* @param x_mat input pars in matrix form (M x K)
+* @param mu Mean vector
+* @param tau Scale parameter - sigma^(-2)
+* @param rho Spatial dependence parameter
+* @param C matrix that represents spatial neighborhood 
+* @param C_eigenvalues eigenvalues of C
+* @param M number of areas
+* @param K number of factors
+**
+@return Log probability density
+*/
+real MLCAR_lpdf(
+	matrix x_mat,				// input pars in matrix form M x K
+	real rho, 					// spatial smoothing parameter
+	matrix Omega_R, 			// Precision matrix for factors
+	matrix Sigma_R, 			// Covariance matrix for factors
+	vector C_w , 
+	int [] C_v , 
+	int [] C_u , 
+	int [] offD_id_C_w ,		// indexes for off diagonal terms
+	int [] D_id_C_w , 		// indexes for diagonal terms - length M
+	vector C_eigenvalues,		// eigenvalues for C
+	int M, 						// Number of areas
+	int K) { 					// Number of factors
+		vector[M] ldet_C;
+		vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
+		matrix[K, M] A_R = Omega_R * x_mat';
+		// Alternative specification for A_S
+		// Omega_S as sparse matrix multiplied by columns of x_mat 
+		// using crs_matrix_times_vector
+			vector [ num_elements(C_w) ] ImrhoC;
+			matrix[M, K] A_S;
+			// Multiple off-diagonal elements by rho
+			ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
+			// Calculate diagonal elements of ImrhoC
+			ImrhoC [ D_id_C_w ] = 1 - rho * C_w[ D_id_C_w ];
+			for(k in 1:K){
+				A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x_mat[,k] );
+			}
+		ldet_C = log1m( rho * C_eigenvalues );
+		real sq_term = sum( A_R .* A_S' );
+		return -0.5 * ( 
+		M*K*log( 2 * pi() ) 
+		+  ( 2 * M * sum( log_d_Sigma_R_chol ) - K * sum( ldet_C ) ) + sq_term 
+		);
+}
+}
+
+"
+```
+
+Now that we have declared the two functions, we compile and expose them to the `R` environment. 
+
+```{r eval=TRUE}
+comp_standard <- stan_model(model_code = standard_model)
+expose_stan_functions(comp_standard)
+
+comp_naiveeff <- stan_model(model_code = naiveeff_model)
+expose_stan_functions(comp_naiveeff)
+
+comp_eff <- stan_model(model_code = eff_model)
+expose_stan_functions(comp_eff)
+```
+
+All that is left to do is generate some fake data and ensure that all three functions give identical log-likelihoods like we expect. 
+
+```{r eval=TRUE}
+# number of areas
+M <- 1500
+# number of factors
+K <- 3
+# set the spatial smoothing parameter
+rho <- 0.4
+
+# use our user-made function to get fully connected grid
+W <- getGRID(M)$W
+M <- nrow(W)
+
+# size of multivariate normal
+n <- M*K
+
+## Spatial precision matrix ----
+I <- diag(1, nrow = M)
+D <- diag(rowSums(W))
+C <- I - D + W
+Omega_S = I - rho * C
+# Use our user-made function to get the required
+# sparse elements from C
+# creates a list
+C_for_stan <- prep4MLCAR(W)
+
+## Between factors precision matrix ----
+Omega_R <- matrix(c(1.2, 0.7, 1,
+                    0.7, 3,   1,
+                    1,   1,   2), byrow = T, ncol = K)
+Omega_R <- Omega_R %*% t(Omega_R) # ensure positive definite
+# covariance matrix
+Sigma_R <- solve(Omega_R)
+
+## Derive full precision matrix ----
+Omega_A <- kronecker(Omega_S, Omega_R)
+
+# Generate some fake data ----
+set.seed(80)
+# vector version
+y_v <- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
+# matrix version
+y_mat <- matrix(y_v, nrow = M, ncol = K, byrow = T)
+
+## Check log-likelihoods ## ----------------------------------------------------
+
+# Standard or naive
+s=Sys.time(); standardMCAR_lpdf(y_v, rep(0,M*K), Omega_A); st = Sys.time()-s
+
+# naive efficient
+s=Sys.time()
+MCARnet1_lpdf(y_mat, rho, Omega_R, Sigma_R, Omega_S, C, C_for_stan$C_eigenvalues, M, K)
+ne = Sys.time()-s
+
+# Efficient (or fast)
+s=Sys.time() 
+MLCAR_lpdf(y_mat, rho, Omega_R, Sigma_R, 
+            C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, M, K)
+eff = Sys.time()-s
+
+## Time check ## ---------------------------------------------------------------
+
+data.frame(method = c("Standard", "Naive efficient", "Efficient"),
+           time = c(st, ne, eff)) %>% 
+  mutate(time = as.numeric(time, units = "secs"))
+
+```
+
+Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With `M=1500` and `K=3` we find that the fast implementation is around 150 times faster.  
+
+## Univariate approach
+
+Like with the PCAR, we can use the `MLCAR_lpdf` as a univariate Leroux prior.
+
+```{r}
+# number of areas
+M <- 3000
+# set the spatial smoothing parameter
+rho <- 0.4
+
+# use our user-made function to get fully connected grid
+W <- getGRID(M)$W
+M <- nrow(W)
+n <- M
+
+## Spatial precision matrix ----
+I <- diag(1, nrow = M)
+D <- diag(rowSums(W))
+C <- I - D + W
+Omega_S = I - rho * C
+# Use our user-made function to get the required
+# sparse elements from C
+# creates a list
+C_for_stan <- prep4MLCAR(W)
+
+## Scalar precisions ----
+Omega_R <- as.matrix(1)
+Sigma_R <- as.matrix(1)
+
+## Derive full precision matrix ----
+Omega_A <- as.numeric(Omega_R) * Omega_S
+
+# Generate some fake data ----
+set.seed(80)
+# vector version
+y_v <- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
+# matrix version
+y_mat <- matrix(y_v, nrow = M, ncol = 1, byrow = T)
+
+## Check log-likelihoods ## ----------------------------------------------------
+
+# Standard or naive
+standardMCAR_lpdf(y_v, rep(0,M), Omega_A)
+
+# Efficient (or fast)
+MLCAR_lpdf(y_mat, rho, 
+           Omega_R, 
+           Sigma_R, 
+            C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, M, 1)
+```
+
+# References
+
+<div id="refs"></div>
