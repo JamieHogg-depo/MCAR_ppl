@@ -473,7 +473,7 @@ expose_stan_functions(comp_eff)
 
 All that is left to do is generate some fake data and ensure that all three functions give identical log-likelihoods like we expect. 
 
-```{r eval=TRUE}
+```{r eval=TRUE, echo=FALSE}
 # number of areas
 M <- 1500
 # number of factors
@@ -515,7 +515,9 @@ set.seed(80)
 y_v <- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
 # matrix version
 y_mat <- matrix(y_v, nrow = M, ncol = K, byrow = T)
+```
 
+```{r}
 ## Check log-likelihoods ## ----------------------------------------------------
 
 # Standard or naive
@@ -546,9 +548,63 @@ Success! Not only does our log-likelihood function provide the same value, but i
 
 ## Univariate approach
 
-Like with the PCAR, we can use the `MLCAR_lpdf` as a univariate Leroux prior.
+The `MLCAR_lpdf` can also be used for univariate random effects (i.e. $k=1$). To make the univariate approach easier, we simplify the `MLCAR_lpdf` function. 
 
 ```{r}
+lcar_model <- "
+functions{
+/**
+* Log probability density of the leroux conditional autoregressive (LCAR) model
+* @param x vector of random effects
+* @param rho spatial dependence parameter
+* @param sigma standard deviation of LCAR
+* @param C_w Sparse representation of C
+* @param C_v Column indices for values in C
+* @param C_u Row starting indices for values in C
+* @param offD_id_C_w indexes for off diagonal terms
+* @param D_id_C_w indexes for diagonal terms - length M
+* @param C_eigenvalues eigenvalues for C
+* @param M number of areas
+**
+@return Log probability density
+*/
+real LCAR_lpdf(
+	vector x,				
+	real rho, 					
+	real sigma, 			 
+	vector C_w , 
+	int [] C_v , 
+	int [] C_u , 
+	int [] offD_id_C_w ,		
+	int [] D_id_C_w , 		
+	vector C_eigenvalues,		
+	int M 					
+	) { 				
+		vector[M] ldet_C;
+		vector [ num_elements(C_w) ] ImrhoC;
+		vector[M] A_S;
+		// Multiple off-diagonal elements by rho
+		ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
+		// Calculate diagonal elements of ImrhoC
+		ImrhoC [ D_id_C_w ] = 1 - rho * C_w[ D_id_C_w ];
+		A_S = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x );
+		ldet_C = log1m( rho * C_eigenvalues );
+		return -0.5 * ( 
+		M*log( 2 * pi() ) 
+		+  ( 2 * M * log(square(sigma)) - sum( ldet_C ) ) 
+		+ 1/square(sigma) * dot_product(x, A_S) 
+		);
+}
+}
+
+"
+```
+
+```{r echo = FALSE}
+# compile and expose functions
+comp_lcar <- stan_model(model_code = lcar_model)
+expose_stan_functions(comp_lcar)
+
 # number of areas
 M <- 3000
 # set the spatial smoothing parameter
@@ -582,19 +638,39 @@ set.seed(80)
 y_v <- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
 # matrix version
 y_mat <- matrix(y_v, nrow = M, ncol = 1, byrow = T)
+```
 
+```{r}
 ## Check log-likelihoods ## ----------------------------------------------------
 
-# Standard or naive
+# Standard or naive multivariate implementation
+s <- Sys.time()
 standardMCAR_lpdf(y_v, rep(0,M), Omega_A)
+n_st <- Sys.time() - s
 
-# Efficient (or fast)
+# Efficient multivariate
+s <- Sys.time()
 MLCAR_lpdf(y_mat, rho, 
            Omega_R, 
            Sigma_R, 
             C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
             C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
             C_for_stan$C_eigenvalues, M, 1)
+m_st <- Sys.time() - s
+
+# Efficient univariate
+s <- Sys.time()
+LCAR_lpdf(as.numeric(y_mat), rho, sigma = sqrt(as.numeric(Sigma_R)), 
+            C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, M)
+u_st <- Sys.time() - s
+
+## Time check ## ---------------------------------------------------------------
+
+data.frame(method = c("Standard", "Multivariate", "Univariate"),
+           time = c(n_st, m_st, u_st)) %>% 
+  mutate(time = as.numeric(time, units = "secs"))
 ```
 
 # References

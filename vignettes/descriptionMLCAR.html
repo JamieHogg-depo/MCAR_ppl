@@ -388,7 +388,7 @@ s=Sys.time()
 A_S &lt;- Omega_S %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
 psych::tr(A_S %*% A_R); km2 &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
-<p>Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took 0.33 seconds, while ours took 0 seconds. Unlike the standard approach which requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications, our approach only requires <span class="math inline">\(MK(M + 2K)\)</span>.</p>
+<p>Success! By using the matrix normal setup, we recover the same squared error term, but around 30 times faster. The standard approach took 0.58 seconds, while ours took 0.02 seconds. Unlike the standard approach which requires <span class="math inline">\(3M^2K^2\)</span> scalar multiplications, our approach only requires <span class="math inline">\(MK(M + 2K)\)</span>.</p>
 <p>An alternative to deriving the trace of the matrix multiplication of <span class="math inline">\(\mathbf{A}^S\)</span> and <span class="math inline">\(\mathbf{A}^R\)</span> is to sum all the elements of the componentwise multiplication of <span class="math inline">\(\mathbf{A}^R\)</span> and <span class="math inline">\(\left(  \mathbf{A}^S  \right)^T\)</span>, which only involves <span class="math inline">\(MK(M + K + 1)\)</span> scalar multiplications.</p>
 <pre class="r"><code># Standard squared term
 (t(y) %*% kronecker(Omega_S, Omega_R) %*% y) # v1</code></pre>
@@ -404,7 +404,7 @@ s=Sys.time()
 A_S &lt;- Omega_S %*% Y2; A_R &lt;- Omega_R %*% t(Y2)
 sum(A_R * t(A_S)); cm &lt;- Sys.time()-s</code></pre>
 <pre><code>## [1] 2995.998</code></pre>
-<p>As expected, we get the same value but a little faster! The trace method took 0.01 seconds, while the componentwise method only took 0.01 seconds.</p>
+<p>As expected, we get the same value but a little faster! The trace method took 0.02 seconds, while the componentwise method only took 0.01 seconds.</p>
 </div>
 <div id="stan-implementations" class="section level2">
 <h2>Stan implementations</h2>
@@ -530,49 +530,7 @@ expose_stan_functions(comp_naiveeff)
 comp_eff &lt;- stan_model(model_code = eff_model)
 expose_stan_functions(comp_eff)</code></pre>
 <p>All that is left to do is generate some fake data and ensure that all three functions give identical log-likelihoods like we expect.</p>
-<pre class="r"><code># number of areas
-M &lt;- 1500
-# number of factors
-K &lt;- 3
-# set the spatial smoothing parameter
-rho &lt;- 0.4
-
-# use our user-made function to get fully connected grid
-W &lt;- getGRID(M)$W
-M &lt;- nrow(W)
-
-# size of multivariate normal
-n &lt;- M*K
-
-## Spatial precision matrix ----
-I &lt;- diag(1, nrow = M)
-D &lt;- diag(rowSums(W))
-C &lt;- I - D + W
-Omega_S = I - rho * C
-# Use our user-made function to get the required
-# sparse elements from C
-# creates a list
-C_for_stan &lt;- prep4MLCAR(W)
-
-## Between factors precision matrix ----
-Omega_R &lt;- matrix(c(1.2, 0.7, 1,
-                    0.7, 3,   1,
-                    1,   1,   2), byrow = T, ncol = K)
-Omega_R &lt;- Omega_R %*% t(Omega_R) # ensure positive definite
-# covariance matrix
-Sigma_R &lt;- solve(Omega_R)
-
-## Derive full precision matrix ----
-Omega_A &lt;- kronecker(Omega_S, Omega_R)
-
-# Generate some fake data ----
-set.seed(80)
-# vector version
-y_v &lt;- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
-# matrix version
-y_mat &lt;- matrix(y_v, nrow = M, ncol = K, byrow = T)
-
-## Check log-likelihoods ## ----------------------------------------------------
+<pre class="r"><code>## Check log-likelihoods ## ----------------------------------------------------
 
 # Standard or naive
 s=Sys.time(); standardMCAR_lpdf(y_v, rep(0,M*K), Omega_A); st = Sys.time()-s</code></pre>
@@ -597,55 +555,72 @@ MLCAR_lpdf(y_mat, rho, Omega_R, Sigma_R,
 data.frame(method = c(&quot;Standard&quot;, &quot;Naive efficient&quot;, &quot;Efficient&quot;),
            time = c(st, ne, eff)) %&gt;% 
   mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
-<pre><code>##            method        time
-## 1        Standard 8.526587009
-## 2 Naive efficient 0.027384043
-## 3       Efficient 0.004070997</code></pre>
+<pre><code>##            method         time
+## 1        Standard 10.281067848
+## 2 Naive efficient  0.034147024
+## 3       Efficient  0.003997087</code></pre>
 <p>Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With <code>M=1500</code> and <code>K=3</code> we find that the fast implementation is around 150 times faster.</p>
 </div>
 <div id="univariate-approach" class="section level2">
 <h2>Univariate approach</h2>
-<p>Like with the PCAR, we can use the <code>MLCAR_lpdf</code> as a univariate Leroux prior.</p>
-<pre class="r"><code># number of areas
-M &lt;- 3000
-# set the spatial smoothing parameter
-rho &lt;- 0.4
+<p>The <code>MLCAR_lpdf</code> can also be used for univariate random effects (i.e. <span class="math inline">\(k=1\)</span>). To make the univariate approach easier, we simplify the <code>MLCAR_lpdf</code> function.</p>
+<pre class="r"><code>lcar_model &lt;- &quot;
+functions{
+/**
+* Log probability density of the leroux conditional autoregressive (LCAR) model
+* @param x vector of random effects
+* @param rho spatial dependence parameter
+* @param sigma standard deviation of LCAR
+* @param C_w Sparse representation of C
+* @param C_v Column indices for values in C
+* @param C_u Row starting indices for values in C
+* @param offD_id_C_w indexes for off diagonal terms
+* @param D_id_C_w indexes for diagonal terms - length M
+* @param C_eigenvalues eigenvalues for C
+* @param M number of areas
+**
+@return Log probability density
+*/
+real LCAR_lpdf(
+    vector x,               
+    real rho,                   
+    real sigma,              
+    vector C_w , 
+    int [] C_v , 
+    int [] C_u , 
+    int [] offD_id_C_w ,        
+    int [] D_id_C_w ,       
+    vector C_eigenvalues,       
+    int M                   
+    ) {                 
+        vector[M] ldet_C;
+        vector [ num_elements(C_w) ] ImrhoC;
+        vector[M] A_S;
+        // Multiple off-diagonal elements by rho
+        ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
+        // Calculate diagonal elements of ImrhoC
+        ImrhoC [ D_id_C_w ] = 1 - rho * C_w[ D_id_C_w ];
+        A_S = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x );
+        ldet_C = log1m( rho * C_eigenvalues );
+        return -0.5 * ( 
+        M*log( 2 * pi() ) 
+        +  ( 2 * M * log(square(sigma)) - sum( ldet_C ) ) 
+        + 1/square(sigma) * dot_product(x, A_S) 
+        );
+}
+}
 
-# use our user-made function to get fully connected grid
-W &lt;- getGRID(M)$W
-M &lt;- nrow(W)
-n &lt;- M
+&quot;</code></pre>
+<pre class="r"><code>## Check log-likelihoods ## ----------------------------------------------------
 
-## Spatial precision matrix ----
-I &lt;- diag(1, nrow = M)
-D &lt;- diag(rowSums(W))
-C &lt;- I - D + W
-Omega_S = I - rho * C
-# Use our user-made function to get the required
-# sparse elements from C
-# creates a list
-C_for_stan &lt;- prep4MLCAR(W)
-
-## Scalar precisions ----
-Omega_R &lt;- as.matrix(1)
-Sigma_R &lt;- as.matrix(1)
-
-## Derive full precision matrix ----
-Omega_A &lt;- as.numeric(Omega_R) * Omega_S
-
-# Generate some fake data ----
-set.seed(80)
-# vector version
-y_v &lt;- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
-# matrix version
-y_mat &lt;- matrix(y_v, nrow = M, ncol = 1, byrow = T)
-
-## Check log-likelihoods ## ----------------------------------------------------
-
-# Standard or naive
+# Standard or naive multivariate implementation
+s &lt;- Sys.time()
 standardMCAR_lpdf(y_v, rep(0,M), Omega_A)</code></pre>
 <pre><code>## [1] -2386.512</code></pre>
-<pre class="r"><code># Efficient (or fast)
+<pre class="r"><code>n_st &lt;- Sys.time() - s
+
+# Efficient multivariate
+s &lt;- Sys.time()
 MLCAR_lpdf(y_mat, rho, 
            Omega_R, 
            Sigma_R, 
@@ -653,6 +628,26 @@ MLCAR_lpdf(y_mat, rho,
             C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
             C_for_stan$C_eigenvalues, M, 1)</code></pre>
 <pre><code>## [1] -2386.512</code></pre>
+<pre class="r"><code>m_st &lt;- Sys.time() - s
+
+# Efficient univariate
+s &lt;- Sys.time()
+LCAR_lpdf(as.numeric(y_mat), rho, sigma = sqrt(as.numeric(Sigma_R)), 
+            C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, M)</code></pre>
+<pre><code>## [1] -2386.512</code></pre>
+<pre class="r"><code>u_st &lt;- Sys.time() - s
+
+## Time check ## ---------------------------------------------------------------
+
+data.frame(method = c(&quot;Standard&quot;, &quot;Multivariate&quot;, &quot;Univariate&quot;),
+           time = c(n_st, m_st, u_st)) %&gt;% 
+  mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
+<pre><code>##         method        time
+## 1     Standard 2.582858086
+## 2 Multivariate 0.004977942
+## 3   Univariate 0.005031824</code></pre>
 </div>
 </div>
 <div id="references" class="section level1">
