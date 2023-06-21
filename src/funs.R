@@ -3,6 +3,33 @@
 myfuns <- list()
 
 # -----------------------------------------------------------------------------
+#' @title getGRID
+#' @description creates a sf object that is a grid of specified size
+#' @param M target number of areas
+#' @returns A list of two objects: sf is a data.frame/sf object with the geometry for the grid, W is the binary weight matrix based on queen contiguity
+myfuns$getGRID <- function(M){
+  
+  out <- list()
+  
+  # provides the height and length dimensions for the grid that are as close to the specified M as possible
+  dims <- c(floor(sqrt(M)), floor(M/floor(sqrt(M))))
+  
+  df <- data.frame(lon = c(0, dims[1]), 
+                   lat = c(0, dims[2])) %>% 
+    st_as_sf(coords = c("lon", "lat")) %>% 
+    st_bbox() %>% 
+    st_as_sfc()
+  
+  out$sf <- sf::st_make_grid(df, square = T, cellsize = c(1, 1)) %>% 
+    sf::st_sf() %>% 
+    dplyr::mutate(id = row_number())
+  
+  out$W <- nb2mat(poly2nb(out$sf, queen = T), style="B") #binary
+  #message(paste0("Created an sf object with ", prod(dims), " rows"))
+  return(out)
+}
+
+# -----------------------------------------------------------------------------
 #' @param W binary contiguity matrix (must be complete)
 #' @param type (defaults to 'pcar') but also takes 'lcar'
 myfuns$prep4MCAR <- function(W, type = "pcar"){
@@ -181,5 +208,89 @@ myfuns$summaryLeroux_mc <- function(samples){
   
   # output summary dataset
   return(bind_rows(ll))
+  
+}
+
+## ----------------------------------------------------------------------------
+#' @param input stan summary (summary(fit)$summary)
+myfuns$getSubsetSummary <- function(input, regex){
+  as.data.frame(input) %>% 
+    rownames_to_column("parameter") %>% 
+    relocate(parameter) %>% 
+    filter(str_detect(parameter, regex))
+}
+
+## ----------------------------------------------------------------------------
+#' @param W binary contiguity matrix (must be complete)
+myfuns$prep4MLCAR <- function(W){    
+    # create sparse matrices
+    W <- Matrix::Matrix(W, sparse = TRUE)
+    D <- Matrix::Diagonal( x = Matrix::rowSums(W) )
+    I <- Matrix::Diagonal(nrow(W))
+    C <- I - D + W
+    # C and W only differ by the diagonal values
+    # C has -1 on off diagonals
+    
+    # ISSUE: Diagonal element of C is zero if area has only one neighbor
+    
+    # get indices for diagonals
+    jt <- rstan::extract_sparse_parts(W + 5*I) # 5 is arbritary
+    # 5's will only be on the diagonals
+    D_id_C_w <- which(jt$w == 5) 
+    # any values that are not 5 are off diagonals
+    offD_id_C_w <- which(jt$w == 1)
+    
+    # Eigenvalues of C
+    C_eigenvalues <- eigen(C)$values
+    
+    # get the CRS representation of C
+    # add an extra 1 to all diagonals to ensure they
+    # are captured by `extract_sparse_parts`
+    crs <- rstan::extract_sparse_parts(C + I)
+    nC_w <- length(crs$w)
+    
+    # Remove 1 from the diagonals 
+    crs$w[D_id_C_w] <- crs$w[D_id_C_w] - 1
+    
+    # prepare output list
+    return(
+      list(C = as.matrix(C),
+           C_eigenvalues = C_eigenvalues, 
+           nC_w = nC_w,
+           C_w = crs$w,
+           C_v = crs$v,
+           C_u = crs$u,
+           D_id_C_w = D_id_C_w,
+           offD_id_C_w = offD_id_C_w)
+    )
+}
+
+## ----------------------------------------------------------------------------
+#' @param W binary contiguity matrix (must be complete)
+myfuns$prep4MPCAR <- function(W){
+    
+    # create sparse matrices
+    W <- Matrix::Matrix(W, sparse = TRUE)
+    I <- Matrix::Diagonal(nrow(W))
+    D <- Matrix::Diagonal( x = Matrix::rowSums(W) )
+    C <- solve(D) %*% W
+    
+    # Eigenvalues of C
+    C_eigenvalues <- eigen(C)$values
+    
+    # get the CRS representation of C
+    crs <- rstan::extract_sparse_parts(I+C)
+    nC_w <- length(crs$w)
+    
+    # prepare output list
+    return(
+      list(C_eigenvalues = C_eigenvalues, 
+           nC_w = nC_w,
+           C_w = crs$w,
+           C_v = crs$v,
+           C_u = crs$u,
+           D_id_C_w = which(crs$w == 1),
+           offD_id_C_w = which(crs$w != 1))
+  )
   
 }
