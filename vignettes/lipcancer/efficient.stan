@@ -1,52 +1,47 @@
 functions{
 /**
-* Log probability density of the multivariate leroux CAR model
-* @param x_mat input pars in matrix form (M x K)
-* @param rho Spatial dependence parameter
-* @param C matrix that represents spatial neighborhood 
-* @param C_eigenvalues eigenvalues of C
+* Log probability density of the leroux conditional autoregressive (LCAR) model
+* @param x vector of random effects
+* @param rho spatial dependence parameter
+* @param sigma standard deviation of LCAR
+* @param C_w Sparse representation of C
+* @param C_v Column indices for values in C
+* @param C_u Row starting indices for values in C
+* @param offD_id_C_w indexes for off diagonal terms
+* @param D_id_C_w indexes for diagonal terms - length M
+* @param C_eigenvalues eigenvalues for C
 * @param M number of areas
-* @param K number of factors
 **
 @return Log probability density
 */
-real MLCAR_lpdf(
-    matrix x_mat,               // input pars in matrix form M x K
-    real rho,                   // spatial smoothing parameter
-    matrix Omega_R,             // Precision matrix for factors
-    matrix Sigma_R,             // Covariance matrix for factors
+real LCAR_lpdf(
+    vector x,               
+    real rho,                   
+    real sigma,              
     vector C_w , 
     int [] C_v , 
     int [] C_u , 
-    int [] offD_id_C_w ,        // indexes for off diagonal terms
-    int [] D_id_C_w ,       // indexes for diagonal terms - length M
-    vector C_eigenvalues,       // eigenvalues for C
-    int M,                      // Number of areas
-    int K) {                    // Number of factors
+    int [] offD_id_C_w ,        
+    int [] D_id_C_w ,       
+    vector C_eigenvalues,       
+    int M                   
+    ) {                 
         vector[M] ldet_C;
-        vector[K] log_d_Sigma_R_chol = log(diagonal(cholesky_decompose(Sigma_R)));
-        matrix[K, M] A_R = Omega_R * x_mat';
-        // Alternative specification for A_S
-        // Omega_S as sparse matrix multiplied by columns of x_mat 
-        // using crs_matrix_times_vector
-            vector [ num_elements(C_w) ] ImrhoC;
-            matrix[M, K] A_S;
-            // Multiple off-diagonal elements by rho
-            ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
-            // Calculate diagonal elements of ImrhoC
-            ImrhoC [ D_id_C_w ] = 1 - rho * C_w[ D_id_C_w ];
-            for(k in 1:K){
-                A_S[,k] = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x_mat[,k] );
-            }
+        vector [ num_elements(C_w) ] ImrhoC;
+        vector[M] A_S;
+        // Multiple off-diagonal elements by rho
+        ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
+        // Calculate diagonal elements of ImrhoC
+        ImrhoC [ D_id_C_w ] = 1 - rho * C_w[ D_id_C_w ];
+        A_S = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x );
         ldet_C = log1m( rho * C_eigenvalues );
-        real sq_term = sum( A_R .* A_S' );
         return -0.5 * ( 
-        M*K*log( 2 * pi() ) 
-        +  ( 2 * M * sum( log_d_Sigma_R_chol ) - K * sum( ldet_C ) ) + sq_term 
+        M*log( 2 * pi() ) 
+        - ( M * log(1/square(sigma)) + sum( ldet_C ) ) 
+        + 1/square(sigma) * dot_product(x, A_S) 
         );
 }
 }
-
 data{
 	int<lower=1> M; 				// number of areas
 	int y[M];
@@ -63,34 +58,23 @@ data{
 }
 parameters{
 	// precision and sigma must be matrices
-	vector<lower=0>[1] tau2_v; // marginal variance
+	real<lower=0> tau2; // marginal variance
 	real<lower=0,upper=1> rho;
 	vector[2] bbeta;
 	vector[M] phi;
-}
-transformed parameters{
-	// To generalize the MLCAR we must use matrices
-	matrix[M,1] phi_mat = to_matrix( phi, M, 1);
-	// precision is inverse of tau2_v
-	matrix[1,1] Omega_R = to_matrix( 1.0 ./ tau2_v, 1, 1 ); 
-	// `Sigma_R` is covariance matrix
-	matrix[1,1] Sigma_R = to_matrix( tau2_v, 1, 1 );
 }
 model{
 	// likelihood model
 	y ~ poisson_log(log(E) + X * bbeta + phi);
 	
 	// priors
-	tau2_v[1] ~ inv_gamma( 1, 0.5); // variance
+	tau2 ~ inv_gamma( 1, 0.5); // variance
 	bbeta ~ std_normal();
 	rho ~ uniform( 0, 1);
 	
 	// unit Leroux CAR prior
-	target += MLCAR_lpdf( phi_mat | rho, Omega_R, Sigma_R,
+	target += LCAR_lpdf( phi | rho, sqrt(tau2),
 	C_w, C_v, C_u,     
-	offD_id_C_w, D_id_C_w, C_eigenvalues, M, 1);
-}
-generated quantities{
-real tau2 = tau2_v[1];
+	offD_id_C_w, D_id_C_w, C_eigenvalues, M);
 }
 

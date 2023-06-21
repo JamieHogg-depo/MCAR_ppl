@@ -127,7 +127,7 @@ First, we'll fit the Poisson Leroux model using `CARBayes`. Along with this vign
 m_s <- Sys.time()
 cb_fit <- myfuns$fitLeroux_mc(observed ~ offset(log(expected)) + scaled_x, 
                               data = data, family = "poisson",
-                              burnin = 12000, n.sample = 14000, 
+                              burnin = 4000, n.sample = 6000, 
                               thin = 1, W = W,
                               n.chains = 4) # n.chains not native to CARBayes
 (cb_rt <- as.numeric(Sys.time() - m_s, units = "mins"))
