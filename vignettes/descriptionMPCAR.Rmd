@@ -26,6 +26,8 @@ library(mvtnorm)
 library(rstan)
 rm(list = ls())
 
+source("../src/funs.R")
+
 ## Functions ## ----------------------------------------------------------------
 
 #' @title getGRID
@@ -55,18 +57,8 @@ getGRID <- function(M){
   return(out)
 }
 
-#' @param input stan summary (summary(fit)$summary)
-getSubsetSummary <- function(input, regex){
-  as.data.frame(input) %>% 
-    rownames_to_column("parameter") %>% 
-    relocate(parameter) %>% 
-    filter(str_detect(parameter, regex))
-}
-
 #' @param W binary contiguity matrix (must be complete)
-#' @param type (defaults to 'pcar') but also takes 'lcar'
-prep4MCAR <- function(W, type = "pcar"){
-  if(type == "pcar"){
+prep4MPCAR <- function(W){
     
     # create sparse matrices
     W <- Matrix::Matrix(W, sparse = TRUE)
@@ -92,57 +84,6 @@ prep4MCAR <- function(W, type = "pcar"){
            offD_id_C_w = which(crs$w != 1))
   )
   
-  }
-  if(type == "lcar"){
-    
-    # create sparse matrices
-    W <- Matrix::Matrix(W, sparse = TRUE)
-    D <- Matrix::Diagonal( x = Matrix::rowSums(W) )
-    I <- Matrix::Diagonal(nrow(W))
-    C <- I - D + W
-    
-    # Eigenvalues of C
-    C_eigenvalues <- eigen(C)$values
-    
-    # get the CRS representation of C
-    crs <- rstan::extract_sparse_parts(C)
-    nC_w <- length(crs$w)
-    
-    # prepare output list
-    return(
-      list(C_eigenvalues = C_eigenvalues, 
-           nC_w = nC_w,
-           C_w = crs$w,
-           C_v = crs$v,
-           C_u = crs$u,
-           D_id_C_w = which(crs$w != 1),
-           offD_id_C_w = which(crs$w == 1))
-  )
-    
-  }
-  
-}
-
-#' @param C C matrix 
-prep4MCAR2 <- function(C){
-  
-  # Eigenvalues of C
-  C_eigenvalues <- eigen(C)$values
-  
-  # get the CRS representation of C
-  crs <- rstan::extract_sparse_parts(C)
-  nC_w <- length(crs$w)
-  
-  # prepare output list
-  return(
-    list(C_eigenvalues = C_eigenvalues, 
-         nC_w = nC_w,
-         C_w = crs$w,
-         C_v = crs$v,
-         C_u = crs$u,
-         D_id_C_w = which(crs$w != 1),
-         offD_id_C_w = which(crs$w == 1))
-  )
 }
 
 ```
@@ -213,7 +154,7 @@ where $\lambda_i$ is the $i$th eigenvalue of $\mathbf{C}$. Once again $\mathbf{C
 ```{r}
 M <- 6 # set number of areas
 rho <- 0.95 # fix rho
-W <- getGRID(M)$W # generate grid with binary weight matrix
+W <- myfuns$getGRID(M)$W # generate grid with binary weight matrix
 M <- nrow(W) # reset number of areas
 
 # Spatial precision matrix
@@ -355,7 +296,7 @@ To grapple with and assess all these implementations, consider the following exa
 
 ```{r long-chunk1}
 M <- 1000; K <- 3
-W <- getGRID(M)$W
+W <- myfuns$getGRID(M)$W
 M <- nrow(W)
 n <- M*K
 
@@ -630,7 +571,7 @@ K <- 3
 rho <- 0.4
 
 # use our user-made function to get fully connected grid
-W <- getGRID(M)$W
+W <- myfuns$getGRID(M)$W
 M <- nrow(W)
 
 # size of multivariate normal
@@ -645,7 +586,7 @@ Omega_S <- D %*% (I - rho * C)
 # Use our user-made function to get the required
 # sparse elements from C
 # creates a list
-C_for_stan <- prep4MCAR(W, type = "pcar")
+C_for_stan <- myfuns$prep4MPCAR(W)
 
 ## Between factors precision matrix ----
 Omega_R <- matrix(c(1.2, 0.7, 1,
@@ -727,8 +668,8 @@ eff2 <- Sys.time()-s
 ## Time check ## ---------------------------------------------------------------
 
 data.frame(method = c("Standard", "Naive efficient", "Efficient", "Efficient MICAR"),
-           time = c(st, ne, eff, eff2)) %>% 
-  mutate(time = as.numeric(time, units = "secs"))
+           time_secs = c(st, ne, eff, eff2)) %>% 
+  mutate(time_secs = as.numeric(time_secs, units = "secs"))
 
 ```
 
@@ -739,13 +680,66 @@ Success! Not only does our log-likelihood function provide the same value, but i
 The `MPCAR_lpdf` and `MICAR_lpdf` can also be used for univariate random effects. That is where $k=1$. Consider the following example for the PCAR. 
 
 ```{r}
+# Fast implementation
+pcar_model <- "
+functions{
+/**
+* Log probability density of the multivariate conditional autoregressive (MCAR) model - type1
+* @param y_mat input pars in matrix form (M x K)
+* @param rho Spatial dependence parameter
+* @param C matrix that represents spatial neighborhood 
+* @param C_eigenvalues eigenvalues of C
+* @param M number of areas
+* @param K number of factors
+**
+@return Log probability density
+*/
+real PCAR_lpdf(
+	vector x,				        // input pars in matrix form M x K
+	real rho, 					    // spatial smoothing parameter
+	real sigma,             // standard deviation
+	vector C_w , 
+	int [] C_v , 
+	int [] C_u , 
+	int [] offD_id_C_w ,		// indexes for off diagonal terms
+	int [] D_id_C_w , 		  // indexes for diagonal terms - length M
+	vector C_eigenvalues,		// eigenvalues for C
+	vector D_W,
+	int M) { 						      // Number of areas
+			vector [ num_elements(C_w) ] ImrhoC;
+			// Multiple off-diagonal elements by rho
+			ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
+			// Calculate diagonal elements of ImrhoC
+			ImrhoC [ D_id_C_w ] = C_w[ D_id_C_w ];
+			// use sparse representation
+			vector[M] A_S = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, 
+			1/square(sigma) * x );
+			vector[M] A_R = x .* D_W;
+    vector[M] ldet_C = log1m( rho * C_eigenvalues );
+    return -0.5 * ( 
+		M*log( 2 * pi() ) 
+		-  ( M * log(1/square(sigma)) + sum( ldet_C ) + sum( log(D_W)) ) 
+		+ dot_product(A_R, A_S) 
+		);
+}
+}
+
+"
+```
+
+
+```{r echo=FALSE}
+# compile and expose functions
+comp_pcar <- stan_model(model_code = pcar_model)
+expose_stan_functions(comp_pcar)
+
 # number of areas
-M <- 100
+M <- 3000
 # set the spatial smoothing parameter
 rho <- 0.4
 
 # use our user-made function to get fully connected grid
-W <- getGRID(M)$W
+W <- myfuns$getGRID(M)$W
 M <- nrow(W)
 n <- M
 
@@ -758,7 +752,7 @@ Omega_S <- D %*% (I - rho * C)
 # Use our user-made function to get the required
 # sparse elements from C
 # creates a list
-C_for_stan <- prep4MCAR(W, type = "pcar")
+C_for_stan <- myfuns$prep4MPCAR(W)
 
 ## Univariate marginal variance ----
 variance  <- 1.2
@@ -773,10 +767,15 @@ y <- MASS::mvrnorm(1, rep(0,n), Sigma_A)
 y_v <- t(y)
 # matrix version
 y_mat <- matrix(y_v, nrow = M, ncol = 1, byrow = T)
+```
 
-## Check ## ----
+```{r}
+## Check log-likelihoods ## ----------------------------------------------------
+s <- Sys.time()
 standardMCAR_lpdf(y_v, rep(0,M), as.matrix(Omega_A))
+n_st <- Sys.time() - s
 
+s <- Sys.time()
 MPCAR_lpdf(y_mat, rho, 
             as.matrix(precision), 
             as.matrix(variance), 
@@ -786,6 +785,24 @@ MPCAR_lpdf(y_mat, rho,
             C_for_stan$offD_id_C_w, 
             C_for_stan$D_id_C_w, 
             C_for_stan$C_eigenvalues, D_W, M, 1)
+m_st <- Sys.time() - s
+
+s <- Sys.time()
+PCAR_lpdf(y_v, rho, 
+            sqrt(variance),
+            C_for_stan$C_w, 
+            C_for_stan$C_v, 
+            C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, 
+            C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, D_W, M)
+u_st <- Sys.time() - s
+
+## Time check ## ---------------------------------------------------------------
+
+data.frame(method = c("Standard", "Multivariate", "Univariate"),
+           time_secs = c(n_st, m_st, u_st)) %>% 
+  mutate(time_secs = as.numeric(time_secs, units = "secs"))
 ```
 
 # References

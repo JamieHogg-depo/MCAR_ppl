@@ -172,7 +172,7 @@ where $\lambda_i$ is the $i$th eigenvalue. Consider the following example.
 ```{r}
 M <- 100 # set number of areas
 rho <- 0.95 # fix rho
-W <- getGRID(M)$W # generate grid with binary weight matrix
+W <- myfuns$getGRID(M)$W # generate grid with binary weight matrix
 M <- nrow(W) # reset number of areas
 
 # Spatial precision matrix
@@ -263,7 +263,7 @@ Consider the following example,
 
 ```{r long-chunk2}
 M <- 1000; K <- 3
-W <- getGRID(M)$W
+W <- myfuns$getGRID(M)$W
 M <- nrow(W)
 n <- M*K
 
@@ -476,7 +476,7 @@ K <- 3
 rho <- 0.4
 
 # use our user-made function to get fully connected grid
-W <- getGRID(M)$W
+W <- myfuns$getGRID(M)$W
 M <- nrow(W)
 
 # size of multivariate normal
@@ -605,7 +605,7 @@ M <- 3000
 rho <- 0.4
 
 # use our user-made function to get fully connected grid
-W <- getGRID(M)$W
+W <- myfuns$getGRID(M)$W
 M <- nrow(W)
 n <- M
 

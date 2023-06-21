@@ -259,7 +259,7 @@ pre code {
 \]</span> where <span class="math inline">\(\lambda_i\)</span> is the <span class="math inline">\(i\)</span>th eigenvalue of <span class="math inline">\(\mathbf{C}\)</span>. Once again <span class="math inline">\(\mathbf{C}\)</span> is fixed and thus the eigenvalues can be passed to Stan as data. To support this formula, consider the following example.</p>
 <pre class="r"><code>M &lt;- 6 # set number of areas
 rho &lt;- 0.95 # fix rho
-W &lt;- getGRID(M)$W # generate grid with binary weight matrix
+W &lt;- myfuns$getGRID(M)$W # generate grid with binary weight matrix
 M &lt;- nrow(W) # reset number of areas
 
 # Spatial precision matrix
@@ -381,7 +381,7 @@ Continuing with this setup, the squared term of the matrix normal distribution i
 \]</span> where <span class="math inline">\(\times\)</span> is componentwise multiplication of the two vectors. The benefit to this approach is that <span class="math inline">\(\mathbf{A}^{*S}\)</span> can be constructed using sparse functions in Stan. Furthermore, given we only need the diagonal elements of <span class="math inline">\(\mathbf{A}^{*S} \mathbf{A}^R\)</span>, we can use the dot product of the rows of <span class="math inline">\(\mathbf{A}^R\)</span> and columns of <span class="math inline">\(\mathbf{A}^R\)</span>. This only involves <span class="math inline">\(MK\)</span> operations, while <span class="math inline">\(\mathbf{A}^{*S} \mathbf{A}^R\)</span> requires <span class="math inline">\(M^2K\)</span>.</p>
 <p>To grapple with and assess all these implementations, consider the following example with simulated data.</p>
 <pre class="r"><code>M &lt;- 1000; K &lt;- 3
-W &lt;- getGRID(M)$W
+W &lt;- myfuns$getGRID(M)$W
 M &lt;- nrow(W)
 n &lt;- M*K
 
@@ -456,11 +456,11 @@ data.frame(method = c(&quot;Standard&quot;, &quot;Trace&quot;, &quot;Componentwi
            time = c(st, km2, cm, km3, km4)) %&gt;% 
   mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
 <pre><code>##          method        time
-## 1      Standard 0.191208124
-## 2         Trace 0.009043932
-## 3 Componentwise 0.007313013
-## 4     Partition 0.041214943
-## 5  Partition_dp 0.024222851</code></pre>
+## 1      Standard 0.213767052
+## 2         Trace 0.012001038
+## 3 Componentwise 0.008011103
+## 4     Partition 0.042035818
+## 5  Partition_dp 0.028996944</code></pre>
 <p>Success! By using the matrix normal setup, we recover the same squared error term, but much faster.</p>
 </div>
 <div id="stan-implementations" class="section level2">
@@ -652,7 +652,7 @@ K &lt;- 3
 rho &lt;- 0.4
 
 # use our user-made function to get fully connected grid
-W &lt;- getGRID(M)$W
+W &lt;- myfuns$getGRID(M)$W
 M &lt;- nrow(W)
 
 # size of multivariate normal
@@ -667,7 +667,7 @@ Omega_S &lt;- D %*% (I - rho * C)
 # Use our user-made function to get the required
 # sparse elements from C
 # creates a list
-C_for_stan &lt;- prep4MCAR(W, type = &quot;pcar&quot;)
+C_for_stan &lt;- myfuns$prep4MPCAR(W)
 
 ## Between factors precision matrix ----
 Omega_R &lt;- matrix(c(1.2, 0.7, 1,
@@ -752,57 +752,71 @@ MICAR_lpdf(y_mat,
 ## Time check ## ---------------------------------------------------------------
 
 data.frame(method = c(&quot;Standard&quot;, &quot;Naive efficient&quot;, &quot;Efficient&quot;, &quot;Efficient MICAR&quot;),
-           time = c(st, ne, eff, eff2)) %&gt;% 
-  mutate(time = as.numeric(time, units = &quot;secs&quot;))</code></pre>
-<pre><code>##            method        time
-## 1        Standard 7.300355196
-## 2 Naive efficient 0.021343946
-## 3       Efficient 0.007619143
-## 4 Efficient MICAR 0.002940178</code></pre>
+           time_secs = c(st, ne, eff, eff2)) %&gt;% 
+  mutate(time_secs = as.numeric(time_secs, units = &quot;secs&quot;))</code></pre>
+<pre><code>##            method   time_secs
+## 1        Standard 8.488635063
+## 2 Naive efficient 0.022000074
+## 3       Efficient 0.032679081
+## 4 Efficient MICAR 0.003773928</code></pre>
 <p>Success! Not only does our log-likelihood function provide the same value, but it is also significantly faster! With <code>M=1500</code> and <code>K=3</code> we find that the fast implementation is around 150 times faster.</p>
 </div>
 <div id="univariate" class="section level2">
 <h2>Univariate</h2>
 <p>The <code>MPCAR_lpdf</code> and <code>MICAR_lpdf</code> can also be used for univariate random effects. That is where <span class="math inline">\(k=1\)</span>. Consider the following example for the PCAR.</p>
-<pre class="r"><code># number of areas
-M &lt;- 100
-# set the spatial smoothing parameter
-rho &lt;- 0.4
+<pre class="r"><code># Fast implementation
+pcar_model &lt;- &quot;
+functions{
+/**
+* Log probability density of the multivariate conditional autoregressive (MCAR) model - type1
+* @param y_mat input pars in matrix form (M x K)
+* @param rho Spatial dependence parameter
+* @param C matrix that represents spatial neighborhood 
+* @param C_eigenvalues eigenvalues of C
+* @param M number of areas
+* @param K number of factors
+**
+@return Log probability density
+*/
+real PCAR_lpdf(
+    vector x,                       // input pars in matrix form M x K
+    real rho,                       // spatial smoothing parameter
+    real sigma,             // standard deviation
+    vector C_w , 
+    int [] C_v , 
+    int [] C_u , 
+    int [] offD_id_C_w ,        // indexes for off diagonal terms
+    int [] D_id_C_w ,         // indexes for diagonal terms - length M
+    vector C_eigenvalues,       // eigenvalues for C
+    vector D_W,
+    int M) {                              // Number of areas
+            vector [ num_elements(C_w) ] ImrhoC;
+            // Multiple off-diagonal elements by rho
+            ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
+            // Calculate diagonal elements of ImrhoC
+            ImrhoC [ D_id_C_w ] = C_w[ D_id_C_w ];
+            // use sparse representation
+            vector[M] A_S = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, 
+            1/square(sigma) * x );
+            vector[M] A_R = x .* D_W;
+    vector[M] ldet_C = log1m( rho * C_eigenvalues );
+    return -0.5 * ( 
+        M*log( 2 * pi() ) 
+        -  ( M * log(1/square(sigma)) + sum( ldet_C ) + sum( log(D_W)) ) 
+        + dot_product(A_R, A_S) 
+        );
+}
+}
 
-# use our user-made function to get fully connected grid
-W &lt;- getGRID(M)$W
-M &lt;- nrow(W)
-n &lt;- M
-
-## Spatial precision matrix ----
-I &lt;- diag(x=1, nrow = M)
-D &lt;- diag(rowSums(W))
-D_W &lt;- rowSums(W)
-C &lt;- solve(D) %*% W
-Omega_S &lt;- D %*% (I - rho * C)
-# Use our user-made function to get the required
-# sparse elements from C
-# creates a list
-C_for_stan &lt;- prep4MCAR(W, type = &quot;pcar&quot;)
-
-## Univariate marginal variance ----
-variance  &lt;- 1.2
-precision &lt;- 1/1.2
-Omega_A &lt;- precision * Omega_S
-Sigma_A &lt;- solve(Omega_A)
-
-# Generate some fake data ----
-set.seed(80)
-# vector version
-y &lt;- MASS::mvrnorm(1, rep(0,n), Sigma_A)
-y_v &lt;- t(y)
-# matrix version
-y_mat &lt;- matrix(y_v, nrow = M, ncol = 1, byrow = T)
-
-## Check ## ----
+&quot;</code></pre>
+<pre class="r"><code>## Check log-likelihoods ## ----------------------------------------------------
+s &lt;- Sys.time()
 standardMCAR_lpdf(y_v, rep(0,M), as.matrix(Omega_A))</code></pre>
-<pre><code>## [1] -65.11195</code></pre>
-<pre class="r"><code>MPCAR_lpdf(y_mat, rho, 
+<pre><code>## [1] -1474.377</code></pre>
+<pre class="r"><code>n_st &lt;- Sys.time() - s
+
+s &lt;- Sys.time()
+MPCAR_lpdf(y_mat, rho, 
             as.matrix(precision), 
             as.matrix(variance), 
             C_for_stan$C_w, 
@@ -811,7 +825,30 @@ standardMCAR_lpdf(y_v, rep(0,M), as.matrix(Omega_A))</code></pre>
             C_for_stan$offD_id_C_w, 
             C_for_stan$D_id_C_w, 
             C_for_stan$C_eigenvalues, D_W, M, 1)</code></pre>
-<pre><code>## [1] -65.11195</code></pre>
+<pre><code>## [1] -1474.377</code></pre>
+<pre class="r"><code>m_st &lt;- Sys.time() - s
+
+s &lt;- Sys.time()
+PCAR_lpdf(y_v, rho, 
+            sqrt(variance),
+            C_for_stan$C_w, 
+            C_for_stan$C_v, 
+            C_for_stan$C_u, 
+            C_for_stan$offD_id_C_w, 
+            C_for_stan$D_id_C_w, 
+            C_for_stan$C_eigenvalues, D_W, M)</code></pre>
+<pre><code>## [1] -1474.377</code></pre>
+<pre class="r"><code>u_st &lt;- Sys.time() - s
+
+## Time check ## ---------------------------------------------------------------
+
+data.frame(method = c(&quot;Standard&quot;, &quot;Multivariate&quot;, &quot;Univariate&quot;),
+           time_secs = c(n_st, m_st, u_st)) %&gt;% 
+  mutate(time_secs = as.numeric(time_secs, units = &quot;secs&quot;))</code></pre>
+<pre><code>##         method  time_secs
+## 1     Standard 4.27378011
+## 2 Multivariate 0.00799489
+## 3   Univariate 0.00716114</code></pre>
 </div>
 </div>
 <div id="references" class="section level1">
