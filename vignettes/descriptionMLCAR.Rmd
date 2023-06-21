@@ -26,6 +26,8 @@ library(mvtnorm)
 library(rstan)
 rm(list = ls())
 
+source("../src/funs.R")
+
 ## Functions ## ----------------------------------------------------------------
 
 #' @title getGRID
@@ -53,14 +55,6 @@ getGRID <- function(M){
   out$W <- nb2mat(poly2nb(out$sf, queen = T), style="B") #binary
   #message(paste0("Created an sf object with ", prod(dims), " rows"))
   return(out)
-}
-
-#' @param input stan summary (summary(fit)$summary)
-getSubsetSummary <- function(input, regex){
-  as.data.frame(input) %>% 
-    rownames_to_column("parameter") %>% 
-    relocate(parameter) %>% 
-    filter(str_detect(parameter, regex))
 }
 
 #' @param W binary contiguity matrix (must be complete)
@@ -591,7 +585,7 @@ real LCAR_lpdf(
 		ldet_C = log1m( rho * C_eigenvalues );
 		return -0.5 * ( 
 		M*log( 2 * pi() ) 
-		+  ( 2 * M * log(square(sigma)) - sum( ldet_C ) ) 
+		- ( M * log(1/square(sigma)) + sum( ldet_C ) ) 
 		+ 1/square(sigma) * dot_product(x, A_S) 
 		);
 }
@@ -626,8 +620,9 @@ Omega_S = I - rho * C
 C_for_stan <- prep4MLCAR(W)
 
 ## Scalar precisions ----
-Omega_R <- as.matrix(1)
-Sigma_R <- as.matrix(1)
+vv <- 0.4
+Sigma_R <- as.matrix(vv)
+Omega_R <- as.matrix(1/vv)
 
 ## Derive full precision matrix ----
 Omega_A <- as.numeric(Omega_R) * Omega_S
@@ -660,7 +655,7 @@ m_st <- Sys.time() - s
 
 # Efficient univariate
 s <- Sys.time()
-LCAR_lpdf(as.numeric(y_mat), rho, sigma = sqrt(as.numeric(Sigma_R)), 
+LCAR_lpdf(as.numeric(y_mat), rho, sigma = sqrt(vv), 
             C_for_stan$C_w, C_for_stan$C_v, C_for_stan$C_u, 
             C_for_stan$offD_id_C_w, C_for_stan$D_id_C_w, 
             C_for_stan$C_eigenvalues, M)
@@ -669,8 +664,8 @@ u_st <- Sys.time() - s
 ## Time check ## ---------------------------------------------------------------
 
 data.frame(method = c("Standard", "Multivariate", "Univariate"),
-           time = c(n_st, m_st, u_st)) %>% 
-  mutate(time = as.numeric(time, units = "secs"))
+           time_secs = c(n_st, m_st, u_st)) %>% 
+  mutate(time_secs = as.numeric(time_secs, units = "secs"))
 ```
 
 # References
