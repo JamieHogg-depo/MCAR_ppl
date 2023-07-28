@@ -1,0 +1,246 @@
+---
+title: "Comparing ICAR implementations in Stan"
+author:
+  name: "By James Hogg - 2023"
+output: 
+  html_document:
+    toc: true
+bibliography: bib.bib
+csl: research-in-number-theory.csl
+editor_options: 
+  chunk_output_type: console
+---
+
+\newcommand{\lb}[1]{\left( #1 \right)}
+\newcommand{\jdist}[2]{\text{#1}\left( #2 \right)}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Load packages ## ------------------------------------------------------------
+
+library(tidyverse)
+library(sf)
+library(spdep)
+library(mvtnorm)
+library(rstan)
+rm(list = ls())
+
+source("../src/funs.R")
+
+## Functions ## ----------------------------------------------------------------
+
+#' @title getGRID
+#' @description creates a sf object that is a grid of specified size
+#' @param M target number of areas
+#' @returns A list of two objects: sf is a data.frame/sf object with the geometry for the grid, W is the binary weight matrix based on queen contiguity
+
+getGRID <- function(M){
+  
+  out <- list()
+  
+  # provides the height and length dimensions for the grid that are as close to the specified M as possible
+  dims <- c(floor(sqrt(M)), floor(M/floor(sqrt(M))))
+  
+  df <- data.frame(lon = c(0, dims[1]), 
+                   lat = c(0, dims[2])) %>% 
+    st_as_sf(coords = c("lon", "lat")) %>% 
+    st_bbox() %>% 
+    st_as_sfc()
+  
+  out$sf <- sf::st_make_grid(df, square = T, cellsize = c(1, 1)) %>% 
+    sf::st_sf() %>% 
+    dplyr::mutate(id = row_number())
+  
+  out$W <- nb2mat(poly2nb(out$sf, queen = T), style="B") #binary
+  #message(paste0("Created an sf object with ", prod(dims), " rows"))
+  return(out)
+}
+
+#' @param W binary contiguity matrix (must be complete)
+prep4MLCAR <- function(W){    
+    # create sparse matrices
+    W <- Matrix::Matrix(W, sparse = TRUE)
+    D <- Matrix::Diagonal( x = Matrix::rowSums(W) )
+    I <- Matrix::Diagonal(nrow(W))
+    C <- I - D + W
+    # C and W only differ by the diagonal values
+    # C has -1 on off diagonals
+    
+    # ISSUE: Diagonal element of C is zero if area has only one neighbor
+    
+    # get indices for diagonals
+    jt <- rstan::extract_sparse_parts(W + 5*I) # 5 is arbritary
+    # 5's will only be on the diagonals
+    D_id_C_w <- which(jt$w == 5) 
+    # any values that are not 5 are off diagonals
+    offD_id_C_w <- which(jt$w == 1)
+    
+    # Eigenvalues of C
+    C_eigenvalues <- eigen(C)$values
+    
+    # get the CRS representation of C
+    # add an extra 1 to all diagonals to ensure they
+    # are captured by `extract_sparse_parts`
+    crs <- rstan::extract_sparse_parts(C + I)
+    nC_w <- length(crs$w)
+    
+    # Remove 1 from the diagonals 
+    crs$w[D_id_C_w] <- crs$w[D_id_C_w] - 1
+    
+    # prepare output list
+    return(
+      list(C = as.matrix(C),
+           C_eigenvalues = C_eigenvalues, 
+           nC_w = nC_w,
+           C_w = crs$w,
+           C_v = crs$v,
+           C_u = crs$u,
+           D_id_C_w = D_id_C_w,
+           offD_id_C_w = offD_id_C_w)
+    )
+}
+
+mungeCARdata4stan = function(adjBUGS,numBUGS) {
+  N = length(numBUGS);
+  nn = numBUGS;
+  N_edges = length(adjBUGS) / 2;
+  node1 = vector(mode="numeric", length=N_edges);
+  node2 = vector(mode="numeric", length=N_edges);
+  iAdj = 0;
+  iEdge = 0;
+  for (i in 1:N) {
+    for (j in 1:nn[i]) {
+      iAdj = iAdj + 1;
+      if (i < adjBUGS[iAdj]) {
+        iEdge = iEdge + 1;
+        node1[iEdge] = i;
+        node2[iEdge] = adjBUGS[iAdj];
+      }
+    }
+  }
+  return (list("N"=N,"N_edges"=N_edges,"node1"=node1,"node2"=node2));
+}
+
+```
+
+# Introduction
+
+```{r eval=TRUE, echo=FALSE}
+
+## Compile model ## ----------------------------------------------------------
+unlink("vignettes/*.rds")
+comp <- stan_model(file = "vignettes/ICAR.stan")
+
+## Simulate map ## ------------------------------------------------------------
+
+# number of areas
+M <- 200
+# set the spatial smoothing parameter
+rho <- 0.99 # as close to an ICAR as possible
+
+# use our user-made function to get fully connected grid
+W <- myfuns$getGRID(M)$W
+M <- nrow(W)
+n <- M
+
+## Get spatial elements
+BUGS_format <- listw2WB(mat2listw(W))
+munge_data <- mungeCARdata4stan(BUGS_format$adjBUGS, BUGS_format$numBUGS)
+C_for_stan <- prep4MLCAR(W)
+
+## Simulate data ## -----------------------------------------------------------
+
+## Precision matrix ----
+I <- diag(1, nrow = M)
+D <- diag(rowSums(W))
+C <- I - D + W
+Omega_S = I - rho * C
+
+## Scalar precisions ----
+vv <- 0.4
+Sigma_R <- as.matrix(vv)
+Omega_R <- as.matrix(1/vv)
+
+## Derive full precision matrix ----
+Omega_A <- as.numeric(Omega_R) * Omega_S
+
+# Generate some fake data ----
+set.seed(80)
+# vector version
+y_v <- LaplacesDemon::rmvnp(1, rep(0,n), Omega_A)
+# matrix version
+y_mat <- matrix(y_v, nrow = M, ncol = 1, byrow = T)
+
+## Fit models ## --------------------------------------------------------------
+
+# Data for stan models
+d <- list(N = n,
+          y = as.numeric(y_mat),
+		  which = 1)
+d <- c(d, for_stan, munge_data)
+
+# Fit 1
+m_s <- Sys.time()
+fit1 <- sampling(object = comp, 
+                data = d, 
+                chains = 2,
+                iter = 6000, warmup = 3000, 
+                cores = 2)
+(rt1 <- as.numeric(Sys.time() - m_s, units = "mins"))
+
+# Fit 2
+m_s <- Sys.time()
+d$which <- 2
+fit2 <- sampling(object = comp, 
+                data = d, 
+                chains = 2,
+                iter = 6000, warmup = 3000, 
+                cores = 2)
+(rt2 <- as.numeric(Sys.time() - m_s, units = "mins"))
+
+## Summarise model ## ---------------------------------------------------------
+
+fit1_its <- rstan::extract(fit1)
+fit1_summ <- summarise_draws(fit1) %>% 
+  mutate(bess_pm = ess_bulk/fit1_rt,
+         tess_pm = ess_tail/fit1_rt)
+		 
+fit2_its <- rstan::extract(fit2)
+fit2_summ <- summarise_draws(fit2) %>% 
+  mutate(bess_pm = ess_bulk/fit2_rt,
+         tess_pm = ess_tail/fit2_rt)
+		 
+## Compare efficiency ## ------------------------------------------------------
+
+rbind(fit1_summ %>% 
+		filter(str_detect(variable, "v")) %>% 
+		slice(1:10) %>% 
+		mutate(variable = str_replace(variable, "bbeta", "beta"),
+			 implementation = "fit1"),
+fit2_summ %>% 
+  filter(str_detect(variable, "v")) %>% 
+  slice(1:10) %>% 
+  mutate(implementation = "fit2")) %>%
+arrange(implementation) %>% 
+dplyr::select(implementation, median, sd, rhat, ess_bulk, bess_pm)  
+
+## Plots ## -------------------------------------------------------------------
+
+rbind(fit1_summ %>% 
+  filter(str_detect(variable, "v")) %>% 
+  mutate(variable = str_replace(variable, "bbeta", "beta"),
+         implementation = "fit1"),
+fit2_summ %>% 
+  filter(str_detect(variable, "v")) %>% 
+  mutate(implementation = "fit2")) %>% 
+ggplot(aes(x = median, xmin = q5, xmax = q95,
+           y = variable, col = implementation))+
+  theme_bw()+
+  geom_errorbar(position = position_dodge(width=1))+
+  geom_point(position = position_dodge(width=1))+
+  labs(x = "", y = "Estimate",
+       col = "")+
+  coord_flip()
+
+```
