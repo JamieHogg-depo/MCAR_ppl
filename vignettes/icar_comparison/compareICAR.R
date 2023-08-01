@@ -1,32 +1,16 @@
----
-title: "Comparing ICAR implementations in Stan"
-author:
-  name: "By James Hogg - 2023"
-output: 
-  html_document:
-    toc: true
-bibliography: bib.bib
-csl: research-in-number-theory.csl
-editor_options: 
-  chunk_output_type: console
----
-
-\newcommand{\lb}[1]{\left( #1 \right)}
-\newcommand{\jdist}[2]{\text{#1}\left( #2 \right)}
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-
 ## Load packages ## ------------------------------------------------------------
 
 library(tidyverse)
-library(sf)
-library(spdep)
-library(mvtnorm)
 library(rstan)
+rstan_options(auto_write = TRUE)
+library(posterior)
+library(spdep)
+library(sf)
+library(mvtnorm)
+library(Matrix)
 rm(list = ls())
 
-source("../src/funs.R")
+source("src/funs.R")
 
 ## Functions ## ----------------------------------------------------------------
 
@@ -122,15 +106,9 @@ mungeCARdata4stan = function(adjBUGS,numBUGS) {
   return (list("N"=N,"N_edges"=N_edges,"node1"=node1,"node2"=node2));
 }
 
-```
-
-# Introduction
-
-```{r eval=TRUE, echo=FALSE}
-
 ## Compile model ## ----------------------------------------------------------
-unlink("vignettes/*.rds")
-comp <- stan_model(file = "vignettes/ICAR.stan")
+unlink("vignettes/icar_comparison/*.rds")
+comp <- stan_model(file = "vignettes/icar_comparison/ICAR.stan")
 
 ## Simulate map ## ------------------------------------------------------------
 
@@ -146,7 +124,7 @@ n <- M
 
 ## Get spatial elements
 BUGS_format <- listw2WB(mat2listw(W))
-munge_data <- mungeCARdata4stan(BUGS_format$adjBUGS, BUGS_format$numBUGS)
+munge_data <- mungeCARdata4stan(BUGS_format$adj, BUGS_format$num)
 C_for_stan <- prep4MLCAR(W)
 
 ## Simulate data ## -----------------------------------------------------------
@@ -177,8 +155,9 @@ y_mat <- matrix(y_v, nrow = M, ncol = 1, byrow = T)
 # Data for stan models
 d <- list(N = n,
           y = as.numeric(y_mat),
-		  which = 1)
-d <- c(d, for_stan, munge_data)
+		  which = 1,
+		  prec = matrix(1, nrow = 1, ncol = 1))
+d <- c(d, C_for_stan, munge_data)
 
 # Fit 1
 m_s <- Sys.time()
@@ -199,41 +178,67 @@ fit2 <- sampling(object = comp,
                 cores = 2)
 (rt2 <- as.numeric(Sys.time() - m_s, units = "mins"))
 
+# Fit 3
+m_s <- Sys.time()
+d$which <- 3
+fit3 <- sampling(object = comp, 
+                 data = d, 
+                 chains = 2,
+                 iter = 6000, warmup = 3000, 
+                 cores = 2)
+(rt3 <- as.numeric(Sys.time() - m_s, units = "mins"))
+
 ## Summarise model ## ---------------------------------------------------------
 
 fit1_its <- rstan::extract(fit1)
 fit1_summ <- summarise_draws(fit1) %>% 
-  mutate(bess_pm = ess_bulk/fit1_rt,
-         tess_pm = ess_tail/fit1_rt)
+  mutate(bess_pm = ess_bulk/rt1,
+         tess_pm = ess_tail/rt1)
 		 
 fit2_its <- rstan::extract(fit2)
 fit2_summ <- summarise_draws(fit2) %>% 
-  mutate(bess_pm = ess_bulk/fit2_rt,
-         tess_pm = ess_tail/fit2_rt)
+  mutate(bess_pm = ess_bulk/rt2,
+         tess_pm = ess_tail/rt2)
+
+fit3_its <- rstan::extract(fit3)
+fit3_summ <- summarise_draws(fit3) %>% 
+  mutate(bess_pm = ess_bulk/rt3,
+         tess_pm = ess_tail/rt3)
 		 
 ## Compare efficiency ## ------------------------------------------------------
 
 rbind(fit1_summ %>% 
 		filter(str_detect(variable, "v")) %>% 
 		slice(1:10) %>% 
-		mutate(variable = str_replace(variable, "bbeta", "beta"),
-			 implementation = "fit1"),
+		mutate(implementation = "fit1",
+		       id = 1:10),
 fit2_summ %>% 
   filter(str_detect(variable, "v")) %>% 
   slice(1:10) %>% 
-  mutate(implementation = "fit2")) %>%
+  mutate(implementation = "fit2",
+         id = 1:10),
+fit3_summ %>% 
+  filter(str_detect(variable, "v")) %>% 
+  slice(1:10) %>% 
+  mutate(implementation = "fit3",
+         id = 1:10)) %>%
 arrange(implementation) %>% 
-dplyr::select(implementation, median, sd, rhat, ess_bulk, bess_pm)  
+dplyr::select(id, implementation, bess_pm) %>% 
+  pivot_wider(names_from = implementation, values_from = bess_pm)
 
 ## Plots ## -------------------------------------------------------------------
 
 rbind(fit1_summ %>% 
   filter(str_detect(variable, "v")) %>% 
-  mutate(variable = str_replace(variable, "bbeta", "beta"),
-         implementation = "fit1"),
+  mutate(implementation = "fit1"),
 fit2_summ %>% 
   filter(str_detect(variable, "v")) %>% 
-  mutate(implementation = "fit2")) %>% 
+  mutate(implementation = "fit2"),
+fit3_summ %>% 
+  filter(str_detect(variable, "v")) %>% 
+  mutate(implementation = "fit3")) %>% 
+filter(implementation != "fit3",
+       variable %in% paste0("v[", 1:50, "]")) %>% 
 ggplot(aes(x = median, xmin = q5, xmax = q95,
            y = variable, col = implementation))+
   theme_bw()+
@@ -243,4 +248,4 @@ ggplot(aes(x = median, xmin = q5, xmax = q95,
        col = "")+
   coord_flip()
 
-```
+## END SCRIPT ## ---------------------------------------------------------------
