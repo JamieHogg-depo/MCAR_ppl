@@ -1,5 +1,18 @@
-## Load packages ## ------------------------------------------------------------
+---
+title: "Compare ICAR specifications in Stan"
+author:
+  name: "By James Hogg - 2023"
+output: 
+  html_document:
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Load packages ## ------------------------------------------------------------
 library(tidyverse)
 library(rstan)
 rstan_options(auto_write = TRUE)
@@ -10,7 +23,7 @@ library(mvtnorm)
 library(Matrix)
 rm(list = ls())
 
-source("src/funs.R")
+source("../../src/funs.R")
 
 ## Functions ## ----------------------------------------------------------------
 
@@ -105,10 +118,14 @@ mungeCARdata4stan = function(adjBUGS,numBUGS) {
   }
   return (list("N"=N,"N_edges"=N_edges,"node1"=node1,"node2"=node2));
 }
+```
 
+```{r echo = F}
 ## Compile model ## ----------------------------------------------------------
-unlink("vignettes/icar_comparison/*.rds")
-comp <- stan_model(file = "vignettes/icar_comparison/ICAR.stan")
+#unlink("vignettes/icar_comparison/*.rds")
+#comp <- stan_model(file = "vignettes/icar_comparison/ICAR.stan")
+unlink("*.rds")
+comp <- stan_model(file = "ICAR.stan")
 
 ## Simulate map ## ------------------------------------------------------------
 
@@ -219,7 +236,9 @@ fit4_its <- rstan::extract(fit4)
 fit4_summ <- summarise_draws(fit4) %>% 
   mutate(bess_pm = ess_bulk/rt4,
          tess_pm = ess_tail/rt4)
-		 
+```
+
+```{r} 
 ## Compare efficiency ## ------------------------------------------------------
 
 rbind(fit1_summ %>% 
@@ -272,5 +291,4 @@ data.frame(fit1 = fit1_its$alpha,
   pivot_longer(everything()) %>% 
   ggplot(aes(x = value, col = name))+
   geom_density()
-
-## END SCRIPT ## ---------------------------------------------------------------
+```

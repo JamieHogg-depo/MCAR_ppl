@@ -1,6 +1,6 @@
 functions {
 real ICAR1_lpdf(
-    vector x,                                              
+    vector x,  
     vector C_w , 
     int [] C_v , 
     int [] C_u , 
@@ -9,7 +9,6 @@ real ICAR1_lpdf(
     vector C_eigenvalues,       
     int M                   
     ) {                 
-        // vector[M] ldet_C;
         vector [ num_elements(C_w) ] ImrhoC;
         vector[M] A_S;
         // Multiple off-diagonal elements by rho
@@ -17,10 +16,8 @@ real ICAR1_lpdf(
         // Calculate diagonal elements of ImrhoC
         ImrhoC [ D_id_C_w ] = 1 - C_w[ D_id_C_w ];
         A_S = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x );
-        // ldet_C = log1m( C_eigenvalues );
         return -0.5 * ( 
         M*log( 2 * pi() ) 
-        // - ( sum( ldet_C ) ) 
         + dot_product(x, A_S) )
 		+ normal_lpdf(sum(x) | 0, 0.001 * M);
 }
@@ -69,6 +66,33 @@ real ICAR3_lpdf(
           M*K*log( 2 * pi() ) + sq_term 
         );
 }
+real LCAR_lpdf(
+    vector x,               
+    real rho,                   
+    real sigma,              
+    vector C_w , 
+    int [] C_v , 
+    int [] C_u , 
+    int [] offD_id_C_w ,        
+    int [] D_id_C_w ,       
+    vector C_eigenvalues,       
+    int M                   
+    ) {                 
+        vector[M] ldet_C;
+        vector [ num_elements(C_w) ] ImrhoC;
+        vector[M] A_S;
+        // Multiple off-diagonal elements by rho
+        ImrhoC [ offD_id_C_w ] = - rho * C_w[ offD_id_C_w ];
+        // Calculate diagonal elements of ImrhoC
+        ImrhoC [ D_id_C_w ] = 1 - rho * C_w[ D_id_C_w ];
+        A_S = csr_matrix_times_vector( M, M, ImrhoC, C_v, C_u, x );
+        ldet_C = log1m( rho * C_eigenvalues );
+        return -0.5 * ( 
+        M*log( 2 * pi() ) 
+        - ( M * log(1/square(sigma)) + sum( ldet_C ) ) 
+        + 1/square(sigma) * dot_product(x, A_S) 
+        );
+}
 }
 data {
 	int<lower=0> N;
@@ -93,18 +117,35 @@ data {
 parameters {
 	vector[N] v;
 	real alpha;
+	real<lower=0,upper=1> rho;
+	real<lower=0> sigma; 
 }
 transformed parameters{
 	matrix[N,1] v_mat = to_matrix(v);
 }
 model{
-	target += normal_lpdf( y | alpha + v , 0.5 );
 	target += std_normal_lpdf( alpha );
-	if(which == 1) target += ICAR1_lpdf( v | C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, N );
-	if(which == 2) target += ICAR2_lpdf( v | N, node1, node2);
+	target += std_normal_lpdf( sigma ); 
+	// Works well
+	if(which == 1){
+		target += normal_lpdf( y | alpha + v , 0.5 );
+		target += ICAR1_lpdf( v | C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, N );
+	}
+	// Identical inference but a little slower
+	if(which == 2){
+		target += normal_lpdf( y | alpha + v , 0.5 );
+		target += ICAR2_lpdf( v | N, node1, node2);
+	}
+	// NOT WORKING
 	if(which == 3){
+		target += normal_lpdf( y | alpha + v , 0.5 );
 		target += ICAR3_lpdf( v_mat | prec, C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, N, 1 );
 		target += normal_lpdf( sum(v_mat[,1]) | 0, 0.001 * N );
+	}
+	// Using LCAR as ICAR equivalent for likelihood
+	if(which == 4){
+		target += LCAR_lpdf (y - alpha | rho, sigma, C_w, C_v, C_u, offD_id_C_w, D_id_C_w, C_eigenvalues, N );
+		target += normal_lpdf( sum(y - alpha) | 0, 0.001 * N );		
 	}
 }
 
